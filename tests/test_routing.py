@@ -20,7 +20,6 @@ def _ctx(content: str, *, author_id: str = "100", prior: tuple = (), parent=None
         trigger=trigger,
         prior=prior,
         parent=parent,
-        callback_webhook_url=None,
     )
 
 

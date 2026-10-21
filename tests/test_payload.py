@@ -1,7 +1,19 @@
+from datetime import timedelta
+
 from grokbot_bridge.address import parse_link_email
 from grokbot_bridge.burst import build_burst, build_tail
-from grokbot_bridge.payload import format_mail
+from grokbot_bridge.payload import CallbackInstructions, format_mail
 from tests.support import T0, message
+
+
+def _callback(*, expires):
+    return CallbackInstructions(
+        reply_url="https://bridge.example/reply/TOKEN",
+        react_url="https://bridge.example/react/TOKEN",
+        expires_at=expires,
+        max_posts=5,
+        text_limit=8000,
+    )
 
 
 def _scenario() -> tuple[object, object, object, tuple[object, ...], tuple[object, ...]]:
@@ -34,7 +46,7 @@ def test_subject_and_body_keep_burst_parent_and_tail_apart() -> None:
         burst=burst,
         tail=tail,
         bot_id="42",
-        callback_webhook_url=None,
+        callback=None,
     )
     assert mail.to == "ada+research@mail.grokbot.com"
     assert mail.subject == "[Discord] #design @ada: research check the palette"
@@ -68,10 +80,9 @@ def test_subject_and_body_keep_burst_parent_and_tail_apart() -> None:
     assert "Mode: routine\n" in text
     assert "Label: research\n" in text
     assert "To: ada+research@mail.grokbot.com\n" in text
-    assert (
-        "Callback webhook: not configured (future work; this bridge does not post replies back to Discord)"
-        in text
-    )
+    assert "--- Reply to Discord ---" in text
+    assert "not configured (set CALLBACK_BASE_URL" in text
+    assert "future work" not in text
 
 
 def test_bot_mode_subject_and_empty_parent_and_tail() -> None:
@@ -85,7 +96,7 @@ def test_bot_mode_subject_and_empty_parent_and_tail() -> None:
         burst=(trigger,),
         tail=(),
         bot_id="42",
-        callback_webhook_url="https://example.com/hook",
+        callback=_callback(expires=T0 + timedelta(hours=24)),
     )
     assert mail.subject == "[Discord] #ops @ada: hello there"
     assert mail.to == "ada@mail.grokbot.com"
@@ -93,11 +104,19 @@ def test_bot_mode_subject_and_empty_parent_and_tail() -> None:
     assert "Label: default\n" in mail.text
     assert "not a reply" in mail.text
     assert "\nnone\n" in mail.text
-    assert (
-        "Callback webhook: https://example.com/hook "
-        "(placeholder only; this bridge does not post replies back to Discord)"
-        in mail.text
-    )
+    assert "This link expires at 2026-10-22T12:00:00+00:00." in mail.text
+    assert "It allows 5 posts." in mail.text
+    assert "Each post replies to the original tagged message." in mail.text
+    assert "A reaction does not use a post." in mail.text
+    assert "Text limit: 8000 characters." in mail.text
+    assert "capped at 2000" in mail.text
+    assert "curl -sS -X POST 'https://bridge.example/reply/TOKEN' \\" in mail.text
+    assert "curl -sS -X POST 'https://bridge.example/react/TOKEN' \\" in mail.text
+    assert "-d '{\"text\":\"your reply\"}'" in mail.text
+    assert "-d '{\"emoji\":\"👀\"}'" in mail.text
+    assert 'JSON: {"text":"..."}' in mail.text
+    assert '{"text":"...","reaction":"👀"}' in mail.text
+    assert "Allowed emoji: 👀 ✅ ❌ ⏳ 👍" in mail.text
 
 
 def test_subject_is_one_line_and_the_body_keeps_the_full_message() -> None:
@@ -112,7 +131,7 @@ def test_subject_is_one_line_and_the_body_keeps_the_full_message() -> None:
         burst=(trigger,),
         tail=(),
         bot_id="42",
-        callback_webhook_url=None,
+        callback=None,
     )
     assert "\n" not in mail.subject
     assert mail.subject.startswith("[Discord] #design secret @ada: ")

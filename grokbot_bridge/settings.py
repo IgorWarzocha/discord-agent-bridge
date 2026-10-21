@@ -10,7 +10,7 @@ from pathlib import Path
 
 _FROM_RE = re.compile(r"(?:[^<>\n]+\s*<([^<>\s]+)>|([^<>\s]+))")
 _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
-_HTTPS_RE = re.compile(r"https://[^\s]+")
+_HTTPS_RE = re.compile(r"https://[^\s/?#]+(?:/[^\s?#]*)?")
 
 
 class SettingsError(ValueError):
@@ -29,7 +29,16 @@ class Settings:
     burst_window_seconds: int
     burst_gap_seconds: int
     channel_tail_count: int
-    callback_webhook_url: str | None
+    callback_base_url: str | None
+    callback_ttl_hours: int
+    callback_max_posts: int
+    callback_text_limit: int
+    callback_rate_limit_max: int
+    callback_rate_limit_window_seconds: int
+    max_hops: int
+    bot_allowlist: tuple[str, ...]
+    http_host: str
+    http_port: int
 
 
 def load_dotenv(path: Path) -> None:
@@ -72,7 +81,18 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         burst_window_seconds=_int_env(source, "BURST_WINDOW_SECONDS", 45, 30, 60),
         burst_gap_seconds=_int_env(source, "BURST_GAP_SECONDS", 5, 2, 10),
         channel_tail_count=_int_env(source, "CHANNEL_TAIL_COUNT", 5, 0, 10),
-        callback_webhook_url=_callback(source),
+        callback_base_url=_base_url(source),
+        callback_ttl_hours=_int_env(source, "CALLBACK_TTL_HOURS", 24, 0, 8760),
+        callback_max_posts=_int_env(source, "CALLBACK_MAX_POSTS", 5, 1, 50),
+        callback_text_limit=_int_env(source, "CALLBACK_TEXT_LIMIT", 8000, 1, 16000),
+        callback_rate_limit_max=_int_env(source, "CALLBACK_RATE_LIMIT_MAX", 20, 1, 1000),
+        callback_rate_limit_window_seconds=_int_env(
+            source, "CALLBACK_RATE_LIMIT_WINDOW_SECONDS", 600, 60, 86400
+        ),
+        max_hops=_int_env(source, "MAX_HOPS", 3, 1, 20),
+        bot_allowlist=_allowlist(source),
+        http_host=_http_host(source),
+        http_port=_int_env(source, "HTTP_PORT", 8787, 1, 65535),
     )
 
 
@@ -96,13 +116,38 @@ def _from_address(value: str) -> str:
     return raw
 
 
-def _callback(source: Mapping[str, str]) -> str | None:
-    raw = source.get("CALLBACK_WEBHOOK_URL", "").strip()
+def _base_url(source: Mapping[str, str]) -> str | None:
+    raw = source.get("CALLBACK_BASE_URL", "").strip().rstrip("/")
     if not raw:
         return None
     if _HTTPS_RE.fullmatch(raw) is None:
-        raise SettingsError("CALLBACK_WEBHOOK_URL must be an https URL, or be left empty.")
+        raise SettingsError(
+            "CALLBACK_BASE_URL must be an https origin the bot can reach, or be left empty."
+        )
     return raw
+
+
+def _http_host(source: Mapping[str, str]) -> str:
+    host = source.get("HTTP_HOST", "").strip() or "127.0.0.1"
+    if "/" in host or " " in host:
+        raise SettingsError("HTTP_HOST must be a host name or address, without a path.")
+    return host
+
+
+def _allowlist(source: Mapping[str, str]) -> tuple[str, ...]:
+    raw = source.get("BOT_ALLOWLIST", "").strip()
+    if not raw:
+        return ()
+    ids: list[str] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if not item.isdigit():
+            raise SettingsError("BOT_ALLOWLIST must be comma-separated Discord user ids.")
+        if item not in ids:
+            ids.append(item)
+    return tuple(ids)
 
 
 def _int_env(source: Mapping[str, str], name: str, default: int, low: int, high: int) -> int:

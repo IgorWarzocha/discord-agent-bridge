@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 from pathlib import Path
 
+from grokbot_bridge.callbacks import CallbackStore
 from grokbot_bridge.discord_app import BridgeBot
 from grokbot_bridge.rate_limit import RateLimiter
 from grokbot_bridge.registry import Registry
@@ -24,6 +25,7 @@ def main() -> None:
     except SettingsError as exc:
         raise SystemExit(str(exc)) from exc
     registry = Registry(settings.database_path)
+    callbacks = CallbackStore(settings.database_path)
     try:
         bot = BridgeBot(
             settings,
@@ -33,10 +35,16 @@ def main() -> None:
                 timedelta(seconds=settings.rate_limit_window_seconds),
             ),
             ResendSender(settings.resend_api_key, settings.resend_from),
+            callbacks,
+            RateLimiter(
+                settings.callback_rate_limit_max,
+                timedelta(seconds=settings.callback_rate_limit_window_seconds),
+            ),
         )
         bot.run(settings.discord_token, log_handler=None)
     finally:
         registry.close()
+        callbacks.close()
 
 
 if __name__ == "__main__":

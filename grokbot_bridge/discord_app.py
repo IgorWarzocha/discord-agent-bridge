@@ -8,18 +8,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 import discord
 from discord import app_commands
 
 from grokbot_bridge.burst import ChannelMessage
+from grokbot_bridge.callbacks import CallbackStore
 from grokbot_bridge.commands import CommandResult, link_account, status_account, unlink_account
+from grokbot_bridge.discord_sink import DiscordSink, react_handoff
+from grokbot_bridge.hops import decide_forward, hop_limit_message
+from grokbot_bridge.http_api import serve_in_thread, stop_http
 from grokbot_bridge.mentions import mentions_bot
 from grokbot_bridge.rate_limit import RateLimiter
 from grokbot_bridge.registry import Registry
+from grokbot_bridge.replies import CallbackService
 from grokbot_bridge.resend import ResendError, ResendSender
-from grokbot_bridge.routing import MentionContext, deliver_mention
+from grokbot_bridge.routing import MentionContext, OpenCallbacks, deliver_mention
 from grokbot_bridge.settings import Settings
 
 logger = logging.getLogger("grokbot_bridge")
@@ -50,12 +55,17 @@ class BridgeBot(discord.Client):
         registry: Registry,
         limiter: RateLimiter,
         sender: ResendSender,
+        callbacks: CallbackStore | None = None,
+        callback_limiter: RateLimiter | None = None,
     ) -> None:
         super().__init__(intents=build_intents())
         self.settings = settings
         self.registry = registry
         self.limiter = limiter
         self.sender = sender
+        self.callbacks = callbacks
+        self.callback_limiter = callback_limiter
+        self._http = None
         self.tree = app_commands.CommandTree(self)
         register_commands(self)
 
@@ -64,34 +74,57 @@ class BridgeBot(discord.Client):
         if guild_id is None:
             await self.tree.sync()
             logger.info("synced global slash commands")
-            return
-        guild = discord.Object(id=guild_id)
-        self.tree.copy_global_to(guild=guild)
-        await self.tree.sync(guild=guild)
-        logger.info("synced slash commands to guild %s", guild_id)
+        else:
+            guild = discord.Object(id=guild_id)
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("synced slash commands to guild %s", guild_id)
+        self._start_callbacks()
 
     async def on_ready(self) -> None:
         user = self.user
         logger.info("logged in as %s", user.name if user else "unknown")
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or self.user is None:
+        if self.user is None or not _targets_bot(message, self.user.id):
             return
-        if message.author.id == self.user.id:
+        decision = decide_forward(
+            author_id=str(message.author.id),
+            author_is_bot=bool(message.author.bot),
+            is_webhook=message.webhook_id is not None,
+            bridge_user_id=str(self.user.id),
+            allowlist=self.settings.bot_allowlist,
+            parent=self._tracked_parent(message),
+            trigger_message_id=str(message.id),
+            max_hops=self.settings.max_hops,
+        )
+        if not decision.forward:
+            if decision.reason == "hop_limit":
+                await _safe_reply(message, hop_limit_message(self.settings.max_hops))
             return
-        if not _targets_bot(message, self.user.id):
-            return
+        if self.callbacks is not None:
+            self.callbacks.track(
+                str(message.id),
+                str(getattr(message.channel, "id", "")),
+                decision.root_id,
+                decision.hop,
+            )
         try:
-            await self._deliver(message)
+            await self._deliver(message, decision.hop, decision.root_id)
         except Exception:
             logger.exception("mention delivery failed user=%s", message.author.id)
             await _safe_reply(message, "Something went wrong and no email was sent.")
 
     async def close(self) -> None:
+        if self._http is not None:
+            stop_http(self._http)
+            self._http = None
         self.registry.close()
+        if self.callbacks is not None:
+            self.callbacks.close()
         await super().close()
 
-    async def _deliver(self, message: discord.Message) -> None:
+    async def _deliver(self, message: discord.Message, hop: int, root_id: str) -> None:
         assert self.user is not None
         outcome = deliver_mention(
             MentionContext(
@@ -101,27 +134,70 @@ class BridgeBot(discord.Client):
                 trigger=_to_record(message),
                 prior=tuple(await self._history(message)),
                 parent=await self._parent(message),
-                callback_webhook_url=self.settings.callback_webhook_url,
+                channel_id=str(getattr(message.channel, "id", "")),
+                hop=hop,
+                root_message_id=root_id,
             ),
             self.registry,
             self.limiter,
             window=timedelta(seconds=self.settings.burst_window_seconds),
             gap=timedelta(seconds=self.settings.burst_gap_seconds),
             tail_count=self.settings.channel_tail_count,
+            callbacks=self._open_callbacks(),
         )
-        if outcome.mail is not None:
-            try:
-                await asyncio.to_thread(self.sender.send, outcome.mail)
-            except ResendError as exc:
-                logger.warning("resend status=%s user=%s", exc.status, message.author.id)
-                await message.reply(_resend_reply(exc))
-                return
-        logger.info(
-            "mention user=%s sent=%s",
-            message.author.id,
-            outcome.mail is not None,
-        )
+        if outcome.mail is None:
+            await message.reply(outcome.channel_reply)
+            return
+        try:
+            await asyncio.to_thread(self.sender.send, outcome.mail)
+        except ResendError as exc:
+            logger.warning("resend status=%s user=%s", exc.status, message.author.id)
+            await react_handoff(message, sent=False)
+            await message.reply(_resend_reply(exc))
+            return
+        await react_handoff(message, sent=True)
+        logger.info("mention user=%s sent=true", message.author.id)
         await message.reply(outcome.channel_reply)
+
+    def _open_callbacks(self) -> OpenCallbacks | None:
+        if self.callbacks is None or not self.settings.callback_base_url:
+            return None
+        return OpenCallbacks(
+            base_url=self.settings.callback_base_url,
+            ttl_hours=self.settings.callback_ttl_hours,
+            max_posts=self.settings.callback_max_posts,
+            text_limit=self.settings.callback_text_limit,
+            store=self.callbacks,
+            now=datetime.now(timezone.utc),
+        )
+
+    def _start_callbacks(self) -> None:
+        if self.callbacks is None or not self.settings.callback_base_url:
+            logger.info("callback http not started")
+            return
+        limiter = self.callback_limiter or RateLimiter(
+            self.settings.callback_rate_limit_max,
+            timedelta(seconds=self.settings.callback_rate_limit_window_seconds),
+        )
+        service = CallbackService(
+            store=self.callbacks,
+            poster=DiscordSink(self, asyncio.get_running_loop()),
+            limiter=limiter,
+            text_limit=self.settings.callback_text_limit,
+            clock=lambda: datetime.now(timezone.utc),
+        )
+        self._http = serve_in_thread(self.settings.http_host, self.settings.http_port, service)
+        logger.info(
+            "callback http listening host=%s port=%s",
+            self.settings.http_host,
+            self.settings.http_port,
+        )
+
+    def _tracked_parent(self, message: discord.Message):
+        reference = message.reference
+        if self.callbacks is None or reference is None or reference.message_id is None:
+            return None
+        return self.callbacks.tracked(str(reference.message_id))
 
     async def _history(self, message: discord.Message) -> list[ChannelMessage]:
         collected: list[ChannelMessage] = []

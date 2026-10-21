@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from grokbot_bridge.burst import (
     DEFAULT_BURST_GAP,
@@ -14,8 +14,9 @@ from grokbot_bridge.burst import (
     build_burst,
     build_tail,
 )
+from grokbot_bridge.callbacks import CallbackStore
 from grokbot_bridge.mentions import selection_keyword
-from grokbot_bridge.payload import OutboundMail, format_mail
+from grokbot_bridge.payload import CallbackInstructions, OutboundMail, format_mail
 from grokbot_bridge.rate_limit import RateLimiter
 from grokbot_bridge.registry import Link, Registry
 
@@ -33,7 +34,19 @@ class MentionContext:
     trigger: ChannelMessage
     prior: tuple[ChannelMessage, ...]
     parent: ChannelMessage | None
-    callback_webhook_url: str | None = None
+    channel_id: str = ""
+    hop: int = 0
+    root_message_id: str = ""
+
+
+@dataclass(frozen=True)
+class OpenCallbacks:
+    base_url: str
+    ttl_hours: int
+    max_posts: int
+    text_limit: int
+    store: CallbackStore
+    now: datetime
 
 
 @dataclass(frozen=True)
@@ -70,6 +83,7 @@ def deliver_mention(
     window: timedelta = DEFAULT_BURST_WINDOW,
     gap: timedelta = DEFAULT_BURST_GAP,
     tail_count: int = DEFAULT_TAIL_COUNT,
+    callbacks: OpenCallbacks | None = None,
 ) -> MentionOutcome:
     """Look up only this author's links. A miss does not consume the rate limit."""
     if ctx.author_id != ctx.trigger.author_id:
@@ -91,7 +105,7 @@ def deliver_mention(
         burst=burst,
         tail=tail,
         bot_id=ctx.bot_id,
-        callback_webhook_url=ctx.callback_webhook_url,
+        callback=_issue_callback(ctx, callbacks),
     )
     return MentionOutcome(channel_reply=_sent_reply(link), mail=mail)
 
@@ -100,3 +114,31 @@ def _sent_reply(link: Link) -> str:
     if link.label is None:
         return f"Sent this to your default {link.address.mode} link."
     return f"Sent this to your {link.address.mode} link `{link.label}`."
+
+
+def _issue_callback(ctx: MentionContext, callbacks: OpenCallbacks | None) -> CallbackInstructions | None:
+    if callbacks is None or not ctx.channel_id.isdigit() or not ctx.trigger.id.isdigit():
+        return None
+    root = ctx.root_message_id or ctx.trigger.id
+    token = callbacks.store.issue(
+        channel_id=ctx.channel_id,
+        message_id=ctx.trigger.id,
+        user_id=ctx.author_id,
+        username=ctx.trigger.author_name,
+        root_message_id=root,
+        hop=ctx.hop,
+        max_posts=callbacks.max_posts,
+        ttl_hours=callbacks.ttl_hours,
+        now=callbacks.now,
+    )
+    base = callbacks.base_url.rstrip("/")
+    expires = None
+    if callbacks.ttl_hours > 0:
+        expires = callbacks.now + timedelta(hours=callbacks.ttl_hours)
+    return CallbackInstructions(
+        reply_url=f"{base}/reply/{token}",
+        react_url=f"{base}/react/{token}",
+        expires_at=expires,
+        max_posts=callbacks.max_posts,
+        text_limit=callbacks.text_limit,
+    )

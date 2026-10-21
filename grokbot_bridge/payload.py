@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from grokbot_bridge.address import GrokAddress
 from grokbot_bridge.burst import ChannelMessage
@@ -11,7 +12,15 @@ from grokbot_bridge.mentions import text_after_mention
 
 _SUBJECT_LIMIT = 140
 _WORDS_LIMIT = 48
-_CALLBACK_NOTE = "this bridge does not post replies back to Discord"
+
+
+@dataclass(frozen=True)
+class CallbackInstructions:
+    reply_url: str
+    react_url: str
+    expires_at: datetime | None
+    max_posts: int
+    text_limit: int
 
 
 class OutboundMail:
@@ -33,7 +42,7 @@ def format_mail(
     burst: Sequence[ChannelMessage],
     tail: Sequence[ChannelMessage],
     bot_id: str,
-    callback_webhook_url: str | None,
+    callback: CallbackInstructions | None,
 ) -> OutboundMail:
     instruction = text_after_mention(trigger.content, bot_id)
     subject = build_subject(channel_name, trigger.author_name, instruction)
@@ -45,7 +54,7 @@ def format_mail(
         parent=parent,
         burst=burst,
         tail=tail,
-        callback_webhook_url=callback_webhook_url,
+        callback=callback,
     )
     return OutboundMail(to=address.exact, subject=subject, text=text)
 
@@ -79,7 +88,7 @@ def build_body(
     parent: ChannelMessage | None,
     burst: Sequence[ChannelMessage],
     tail: Sequence[ChannelMessage],
-    callback_webhook_url: str | None,
+    callback: CallbackInstructions | None,
 ) -> str:
     channel = _single_line(channel_name).lstrip("#") or "channel"
     username = _single_line(trigger.author_name).lstrip("@") or "unknown"
@@ -93,7 +102,8 @@ def build_body(
         f"Mode: {address.mode}",
         f"Label: {label or 'default'}",
         f"To: {address.exact}",
-        f"Callback webhook: {_callback(callback_webhook_url)}",
+        "",
+        render_callback(callback),
         "",
         "--- Tagged message ---",
         tagged,
@@ -111,10 +121,42 @@ def build_body(
     return "\n".join(blocks)
 
 
-def _callback(url: str | None) -> str:
-    if not url:
-        return f"not configured (future work; {_CALLBACK_NOTE})"
-    return f"{url} (placeholder only; {_CALLBACK_NOTE})"
+def render_callback(callback: CallbackInstructions | None) -> str:
+    """Instructions an agent can follow without guessing the URL or the JSON."""
+    if callback is None:
+        return (
+            "--- Reply to Discord ---\n"
+            "not configured (set CALLBACK_BASE_URL to an https address the bot can reach)"
+        )
+    if callback.expires_at is None:
+        lifetime = "This link does not expire."
+    else:
+        stamp = callback.expires_at.astimezone(timezone.utc).isoformat()
+        lifetime = f"This link expires at {stamp}."
+    posts = "post" if callback.max_posts == 1 else "posts"
+    reply = f"curl -sS -X POST '{callback.reply_url}' \\"
+    react = f"curl -sS -X POST '{callback.react_url}' \\"
+    return "\n".join(
+        [
+            "--- Reply to Discord ---",
+            f"{lifetime} It allows {callback.max_posts} {posts}.",
+            "Each post replies to the original tagged message. A reaction does not use a post.",
+            (
+                f"Text limit: {callback.text_limit} characters. "
+                "Discord messages are capped at 2000; the bridge splits longer text."
+            ),
+            "Mentions are not pinged.",
+            reply,
+            "  -H 'content-type: application/json' \\",
+            "  -d '{\"text\":\"your reply\"}'",
+            'JSON: {"text":"..."}',
+            'Optional reaction on the same call: {"text":"...","reaction":"👀"}',
+            "Allowed emoji: 👀 ✅ ❌ ⏳ 👍",
+            react,
+            "  -H 'content-type: application/json' \\",
+            "  -d '{\"emoji\":\"👀\"}'",
+        ]
+    )
 
 
 def _render_many(messages: Sequence[ChannelMessage]) -> str:

@@ -23,7 +23,12 @@ def test_defaults_and_required_secrets() -> None:
     assert settings.rate_limit_max == 5
     assert settings.rate_limit_window_seconds == 600
     assert settings.discord_guild_id is None
-    assert settings.callback_webhook_url is None
+    assert settings.callback_base_url is None
+    assert settings.callback_ttl_hours == 24
+    assert settings.callback_max_posts == 5
+    assert settings.max_hops == 3
+    assert settings.http_host == "127.0.0.1"
+    assert settings.http_port == 8787
     with pytest.raises(SettingsError, match="DISCORD_BOT_TOKEN"):
         load_settings(_env(DISCORD_BOT_TOKEN=""))
 
@@ -35,14 +40,19 @@ def test_burst_window_must_stay_between_30_and_60(window: str) -> None:
     assert load_settings(_env(BURST_WINDOW_SECONDS="60")).burst_window_seconds == 60
 
 
-def test_callback_must_be_https_and_from_must_be_an_email() -> None:
-    with pytest.raises(SettingsError, match="CALLBACK_WEBHOOK_URL"):
-        load_settings(_env(CALLBACK_WEBHOOK_URL="javascript:alert(1)"))
+def test_callback_base_url_must_be_https_and_from_must_be_an_email() -> None:
+    with pytest.raises(SettingsError, match="CALLBACK_BASE_URL"):
+        load_settings(_env(CALLBACK_BASE_URL="javascript:alert(1)"))
+    with pytest.raises(SettingsError, match="CALLBACK_BASE_URL"):
+        load_settings(_env(CALLBACK_BASE_URL="http://example.com"))
     with pytest.raises(SettingsError, match="RESEND_FROM"):
         load_settings(_env(RESEND_FROM="not-an-email"))
-    settings = load_settings(_env(CALLBACK_WEBHOOK_URL="https://example.com/hook"))
-    assert settings.callback_webhook_url == "https://example.com/hook"
+    settings = load_settings(_env(CALLBACK_BASE_URL="https://example.com/hook/"))
+    assert settings.callback_base_url == "https://example.com/hook"
     assert load_settings(_env(RESEND_FROM="bridge@example.com")).resend_from == "bridge@example.com"
+    assert load_settings(_env(CALLBACK_TTL_HOURS="0")).callback_ttl_hours == 0
+    with pytest.raises(SettingsError, match="CALLBACK_TTL_HOURS"):
+        load_settings(_env(CALLBACK_TTL_HOURS="-1"))
 
 
 def test_dotenv_does_not_override_existing_variables(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
