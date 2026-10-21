@@ -21,7 +21,7 @@ from discord_agent_bridge.commands import (
     disconnect_account,
     status_account,
 )
-from discord_agent_bridge.connectors.catalog import CONNECTOR_TYPES, ConnectorCatalog
+from discord_agent_bridge.connectors.catalog import ConnectorCatalog
 from discord_agent_bridge.discord_sink import DiscordSink, react_handoff
 from discord_agent_bridge.hops import decide_forward, hop_limit_message
 from discord_agent_bridge.http_api import serve_in_thread, stop_http
@@ -36,9 +36,8 @@ logger = logging.getLogger("discord_agent_bridge")
 
 _HISTORY_PAGE = 100
 _HISTORY_CAP = 300
-_CONNECT_DESCRIPTION = "Connect an agent. type chooses grokbot, webhook, hermes, or openclaw."
+_CONNECT_DESCRIPTION = "Connect an agent. type chooses an available connector."
 _STATUS_DESCRIPTION = "Show your connected agents, labels, and addresses."
-_TYPE_CHOICES = [app_commands.Choice(name=name, value=name) for name in CONNECTOR_TYPES]
 
 
 def build_intents() -> discord.Intents:
@@ -249,7 +248,7 @@ def register_commands(bot: BridgeBot) -> None:
         token="OpenClaw hook token. Never shown in status.",
         agent_id="Optional OpenClaw agentId.",
     )
-    @app_commands.choices(type=_TYPE_CHOICES)
+    @app_commands.choices(type=[app_commands.Choice(name=name, value=name) for name in bot.connectors.types()])
     async def connect(
         interaction: discord.Interaction,
         type: str,

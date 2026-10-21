@@ -37,7 +37,7 @@ A link is `type` + optional `label` + config that the type's `validate` method a
 | `/disconnect` | Remove one label, only the default, or every link you saved. |
 | `/status` | List your links. |
 
-`/connect` options: `email` and `tag` (grokbot), `url` (webhook, Hermes, OpenClaw), `secret` (webhook, Hermes), `token` and `agent_id` (OpenClaw). Each connector ignores options it does not use and rejects a config that is missing what it requires.
+`/connect` lists the connectors enabled on this deployment. Its options are `email` and `tag` (grokbot), `url` (webhook, Hermes, OpenClaw), `secret` (webhook, Hermes), `token` and `agent_id` (OpenClaw). Each connector ignores options it does not use and rejects a config that is missing what it requires.
 
 ## Reply path
 
@@ -133,7 +133,7 @@ The bridge POSTs `{"message": "<task text>", "name": "Discord", "deliver": false
 
 ## Resend
 
-`RESEND_API_KEY` and `RESEND_FROM` on a verified domain. SPF and DKIM must align with that From domain. Routine email triggers default to `requireAuthPass` (SPF, DKIM, and DMARC). If they do not pass, a grokbot routine will not fire.
+Set both `RESEND_API_KEY` and `RESEND_FROM` to enable grokbot, or leave both empty to run only the HTTP connectors. The From address must use a verified domain. SPF and DKIM must align with that domain. Routine email triggers default to `requireAuthPass` (SPF, DKIM, and DMARC). If they do not pass, a grokbot routine will not fire.
 
 ## Hosting
 
@@ -163,8 +163,8 @@ Links live in SQLite at `DATABASE_PATH` (default `data/links.sqlite3`). `.env` i
 | --- | --- | --- | --- |
 | `DISCORD_BOT_TOKEN` | yes | | Bot token |
 | `DISCORD_GUILD_ID` | no | global sync | Server id for fast slash-command sync |
-| `RESEND_API_KEY` | yes | | Used by the grokbot connector |
-| `RESEND_FROM` | yes | | Verified, SPF/DKIM-aligned sender |
+| `RESEND_API_KEY` | for grokbot | | Used by the grokbot connector |
+| `RESEND_FROM` | for grokbot | | Verified, SPF/DKIM-aligned sender |
 | `DATABASE_PATH` | no | `data/links.sqlite3` | SQLite file |
 | `RATE_LIMIT_MAX` | no | `5` | Deliveries per Discord user per window |
 | `RATE_LIMIT_WINDOW_SECONDS` | no | `600` | That window |

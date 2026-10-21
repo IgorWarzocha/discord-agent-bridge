@@ -65,16 +65,17 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     source = os.environ if env is None else env
     token = source.get("DISCORD_BOT_TOKEN", "").strip()
     api_key = source.get("RESEND_API_KEY", "").strip()
+    sender = source.get("RESEND_FROM", "").strip()
     if not token:
         raise SettingsError("DISCORD_BOT_TOKEN is required.")
-    if not api_key:
-        raise SettingsError("RESEND_API_KEY is required.")
+    if bool(api_key) != bool(sender):
+        raise SettingsError("Set both RESEND_API_KEY and RESEND_FROM to enable grokbot, or leave both empty.")
     database = source.get("DATABASE_PATH", "").strip() or "data/links.sqlite3"
     return Settings(
         discord_token=token,
         discord_guild_id=_guild_id(source),
         resend_api_key=api_key,
-        resend_from=_from_address(source.get("RESEND_FROM", "")),
+        resend_from=_from_address(sender) if sender else "",
         database_path=Path(database),
         rate_limit_max=_int_env(source, "RATE_LIMIT_MAX", 5, 1, 100),
         rate_limit_window_seconds=_int_env(source, "RATE_LIMIT_WINDOW_SECONDS", 600, 60, 86400),

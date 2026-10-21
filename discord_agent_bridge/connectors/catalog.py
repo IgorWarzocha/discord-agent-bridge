@@ -9,12 +9,9 @@ from discord_agent_bridge.connectors.grokbot import GrokbotConnector
 from discord_agent_bridge.connectors.hermes import HermesConnector
 from discord_agent_bridge.connectors.http_post import HttpTransport
 from discord_agent_bridge.connectors.openclaw import OpenClawConnector
-from discord_agent_bridge.connectors.protocol import Connector, ConnectorType
+from discord_agent_bridge.connectors.protocol import Connector
 from discord_agent_bridge.connectors.webhook import WebhookConnector
 from discord_agent_bridge.resend import ResendSender
-
-CONNECTOR_TYPES: tuple[ConnectorType, ...] = ("grokbot", "webhook", "hermes", "openclaw")
-
 
 class ConnectorCatalog:
     def __init__(self, connectors: Mapping[str, Connector]) -> None:
@@ -28,14 +25,15 @@ class ConnectorCatalog:
 
 
 def build_connectors(
-    sender: ResendSender,
+    sender: ResendSender | None,
     transport: HttpTransport,
     clock: Callable[[], datetime],
 ) -> ConnectorCatalog:
     connectors: dict[str, Connector] = {
-        "grokbot": GrokbotConnector(sender),
         "webhook": WebhookConnector(transport, clock),
         "hermes": HermesConnector(transport, clock),
         "openclaw": OpenClawConnector(transport),
     }
+    if sender is not None:
+        connectors = {"grokbot": GrokbotConnector(sender), **connectors}
     return ConnectorCatalog(connectors)

@@ -2,7 +2,7 @@ import hashlib
 import hmac
 import json
 from io import BytesIO
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from discord_agent_bridge.connectors.catalog import build_connectors
 from discord_agent_bridge.connectors.grokbot import GrokbotConnector
@@ -13,9 +13,12 @@ from discord_agent_bridge.connectors.protocol import InvalidConfig
 from discord_agent_bridge.connectors.signing import signature_v1, signature_v2
 from discord_agent_bridge.connectors.webhook import WebhookConnector
 from discord_agent_bridge.commands import connect_account, status_account
+from discord_agent_bridge.discord_app import BridgeBot
 from discord_agent_bridge.payload import BridgePayload
+from discord_agent_bridge.rate_limit import RateLimiter
 from discord_agent_bridge.registry import Registry
 from discord_agent_bridge.resend import ResendSender
+from discord_agent_bridge.settings import load_settings
 from tests.support import T0, FakeResend
 
 
@@ -188,3 +191,21 @@ def test_catalog_delivers_through_production_http_transport(monkeypatch) -> None
         assert connector.deliver(_payload(), connector.validate(options)).ok
     assert len(requests) == 3
     assert all(request.method == "POST" and request.data for request in requests)
+
+
+def test_connect_choices_exclude_unconfigured_grokbot(tmp_path) -> None:
+    catalog = build_connectors(None, RecordingHttp(), lambda: T0)
+    with Registry(tmp_path / "links.sqlite3") as registry:
+        bot = BridgeBot(
+            load_settings({"DISCORD_BOT_TOKEN": "test-token"}), registry,
+            RateLimiter(5, timedelta(minutes=10)), catalog,
+        )
+        command = bot.tree.get_command("connect")
+        choices = next(p.choices for p in command.parameters if p.name == "type")
+        assert {choice.value for choice in choices} == {"webhook", "hermes", "openclaw"}
+        result = connect_account(
+            registry, catalog, user_id="100", connector_type="grokbot", label=None,
+            options={"email": "ada@mail.grokbot.com"},
+        )
+        assert not result.ok
+        assert registry.list_links("100") == ()

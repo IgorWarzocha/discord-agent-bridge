@@ -29,7 +29,7 @@ def main() -> None:
     registry = Registry(settings.database_path)
     callbacks = CallbackStore(settings.database_path)
     connectors = build_connectors(
-        ResendSender(settings.resend_api_key, settings.resend_from),
+        ResendSender(settings.resend_api_key, settings.resend_from) if settings.resend_api_key else None,
         urllib_post,
         lambda: datetime.now(timezone.utc),
     )
