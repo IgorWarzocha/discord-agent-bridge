@@ -32,8 +32,8 @@ def test_label_selects_only_that_users_link(tmp_path) -> None:
     connectors, fake = _connectors()
     missed = deliver_mention(_ctx("<@42> hello"), registry, RateLimiter(5, timedelta(minutes=10), clock=lambda: T0), connectors)
     assert missed.handoff == "none"
-    assert missed.channel_reply == NOT_LINKED
-    assert "/connect" in missed.channel_reply
+    assert missed.summary == NOT_LINKED
+    assert "/connect" in missed.summary
     assert fake.calls == []
 
     registry.upsert("100", None, "grokbot", {"email": "ada@mail.grokbot.com", "mode": "bot"})
@@ -43,7 +43,7 @@ def test_label_selects_only_that_users_link(tmp_path) -> None:
     chosen = deliver_mention(_ctx("<@42> research summarize the thread"), registry, limiter, connectors)
     assert chosen.handoff == "sent"
     assert fake.calls[-1][2]["to"] == ["ada+research@mail.grokbot.com"]
-    assert "mail.grokbot.com" not in chosen.channel_reply
+    assert "mail.grokbot.com" not in chosen.summary
 
     fallback = deliver_mention(_ctx("<@42> please research this"), registry, limiter, connectors)
     assert fallback.handoff == "sent"
@@ -78,7 +78,7 @@ def test_mention_rate_limit_is_per_user(tmp_path) -> None:
     assert first.handoff == "sent"
     assert fake.calls[0][2]["to"] == ["ada+research@mail.grokbot.com"]
     assert second.handoff == "none"
-    assert second.channel_reply.startswith("Rate limit: 1 email per 10 minutes")
+    assert second.summary.startswith("Rate limit: 1 email per 10 minutes")
     assert other.handoff == "sent"
     assert fake.calls[-1][2]["to"] == ["bob@mail.grokbot.com"]
     registry.close()

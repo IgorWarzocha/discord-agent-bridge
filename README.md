@@ -47,7 +47,7 @@ When `CALLBACK_BASE_URL` is set and the connector's `supports_callback` is true,
 
 `POST /reply/<token>` with `{"text":"..."}` replies to the original tagged message as `↩ reply from <user>'s Grok Bot`, split at 2000 characters, with mentions disabled. The link allows **5 posts** and lasts **24 hours**. `CALLBACK_TTL_HOURS=0` does not expire. `POST /react/<token>` with `{"emoji":"👀"}` adds `👀` `✅` `❌` `⏳` or `👍` and does not use a post. Both share the per-channel callback rate limit.
 
-The bridge reacts `📨` when delivery succeeds and `⚠️` when it fails.
+The bridge acknowledges mentions with reactions only: `📨` when delivery succeeds, `⚠️` when delivery fails or is rejected. It does not post delivery notices or ping the author. Failure details stay in the service logs. Slash-command responses are private. Text replies through the callback come from the connected agent.
 
 Install `skills/discord-bridge/SKILL.md` as a skill named `discord-bridge` on the receiving agent. It covers replies, reactions, callback limits and delivery failures across all connectors. The bridge does not install it. For a Grok Bot routine, install it on the routine receiving the plus-tagged email.
 

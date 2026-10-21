@@ -23,7 +23,7 @@ from discord_agent_bridge.commands import (
 )
 from discord_agent_bridge.connectors.catalog import ConnectorCatalog
 from discord_agent_bridge.discord_sink import DiscordSink, react_handoff
-from discord_agent_bridge.hops import decide_forward, hop_limit_message
+from discord_agent_bridge.hops import decide_forward
 from discord_agent_bridge.http_api import serve_in_thread, stop_http
 from discord_agent_bridge.mentions import mentions_bot
 from discord_agent_bridge.rate_limit import RateLimiter
@@ -105,7 +105,8 @@ class BridgeBot(discord.Client):
         )
         if not decision.forward:
             if decision.reason == "hop_limit":
-                await _safe_reply(message, hop_limit_message(self.settings.max_hops))
+                logger.info("mention stopped user=%s reason=hop_limit", message.author.id)
+                await react_handoff(message, sent=False)
             return
         if self.callbacks is not None:
             self.callbacks.track(
@@ -118,7 +119,7 @@ class BridgeBot(discord.Client):
             await self._deliver(message, decision.hop, decision.root_id)
         except Exception:
             logger.exception("mention delivery failed user=%s", message.author.id)
-            await _safe_reply(message, "Something went wrong and no email was sent.")
+            await react_handoff(message, sent=False)
 
     async def close(self) -> None:
         if self._http is not None:
@@ -152,10 +153,8 @@ class BridgeBot(discord.Client):
             tail_count=self.settings.channel_tail_count,
             callbacks=self._open_callbacks(),
         )
-        if outcome.handoff != "none":
-            await react_handoff(message, sent=outcome.handoff == "sent")
-        logger.info("mention user=%s handoff=%s", message.author.id, outcome.handoff)
-        await message.reply(outcome.channel_reply)
+        await react_handoff(message, sent=outcome.handoff == "sent")
+        logger.info("mention user=%s handoff=%s detail=%s", message.author.id, outcome.handoff, outcome.summary)
 
     def _open_callbacks(self) -> OpenCallbacks | None:
         if self.callbacks is None or not self.settings.callback_base_url:
@@ -343,10 +342,3 @@ def _channel_name(channel: object) -> str:
 
 def _options(**values: str | None) -> dict[str, str]:
     return {key: value.strip() for key, value in values.items() if value and value.strip()}
-
-
-async def _safe_reply(message: discord.Message, text: str) -> None:
-    try:
-        await message.reply(text)
-    except discord.HTTPException:
-        logger.warning("could not send the error reply")

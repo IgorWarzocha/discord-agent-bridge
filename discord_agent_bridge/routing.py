@@ -52,7 +52,7 @@ class OpenCallbacks:
 
 @dataclass(frozen=True)
 class MentionOutcome:
-    channel_reply: str
+    summary: str
     handoff: Handoff
 
 

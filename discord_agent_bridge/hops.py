@@ -48,7 +48,3 @@ def decide_forward(
             return ForwardDecision(False, hop, "hop_limit", root)
         return ForwardDecision(True, hop, "bot", root)
     return ForwardDecision(True, 0, "human", trigger_message_id)
-
-
-def hop_limit_message(max_hops: int) -> str:
-    return f"Stopped: this thread is past the bot-to-bot hop limit ({max_hops})."

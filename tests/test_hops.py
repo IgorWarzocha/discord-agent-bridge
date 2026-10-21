@@ -1,5 +1,5 @@
 from discord_agent_bridge.callbacks import TrackedMessage
-from discord_agent_bridge.hops import decide_forward, hop_limit_message
+from discord_agent_bridge.hops import decide_forward
 
 
 def test_loop_guard_and_hop_limit() -> None:
@@ -73,4 +73,3 @@ def test_loop_guard_and_hop_limit() -> None:
         max_hops=3,
     )
     assert not stopped.forward and stopped.hop == 4 and stopped.reason == "hop_limit"
-    assert "3" in hop_limit_message(3)
