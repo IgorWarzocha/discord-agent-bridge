@@ -90,8 +90,9 @@ def test_delivery_worker_reads_links_created_on_bot_thread(tmp_path) -> None:
         registry.upsert("100", None, "grokbot", {"email": "ada@mail.grokbot.com", "mode": "bot"})
         with ThreadPoolExecutor(max_workers=1) as worker:
             outcome = worker.submit(
-                deliver_mention, _ctx("<@42> hello"), registry,
+                deliver_mention, _ctx("@bot hello"), registry,
                 RateLimiter(5, timedelta(minutes=10), clock=lambda: T0), connectors,
             ).result()
         assert outcome.handoff == "sent"
         assert fake.calls[0][2]["to"] == ["ada@mail.grokbot.com"]
+        assert "@ada: hello" in fake.calls[0][2]["subject"]

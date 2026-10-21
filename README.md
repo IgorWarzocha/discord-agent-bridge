@@ -4,6 +4,8 @@ A Discord mention is delivered to the agent **that user** connected. Grok Bot is
 
 The core does not know how an agent is woken. It builds one payload and calls `connector.deliver`.
 
+After `/connect`, type `@bot your request` to use your default connection, or `@bot label your request` to select a labelled link. Literal `@bot` text works without choosing an autocomplete mention. A native Discord mention of the bridge works too.
+
 ## Architecture
 
 ```

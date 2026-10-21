@@ -36,4 +36,4 @@ def selection_keyword(content: str, bot_id: str) -> str | None:
 def _mention(content: str, bot_id: str) -> re.Match[str] | None:
     if not bot_id.isdigit():
         return None
-    return re.search(rf"<@!?{bot_id}>", content)
+    return re.search(rf"<@!?{bot_id}>|(?<![\w@])@bot(?![\w-])", content, re.IGNORECASE)
