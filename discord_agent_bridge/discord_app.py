@@ -19,7 +19,6 @@ from discord_agent_bridge.commands import (
     CommandResult,
     connect_account,
     disconnect_account,
-    link_grok,
     status_account,
 )
 from discord_agent_bridge.connectors.catalog import CONNECTOR_TYPES, ConnectorCatalog
@@ -272,33 +271,6 @@ def register_commands(bot: BridgeBot) -> None:
                 connector_type=type,
                 label=label,
                 options=options,
-            ),
-        )
-
-    @bot.tree.command(
-        name="link-grok",
-        description="Connect a Grok Bot email. Plain is bot mode; a plus-tag is routine mode.",
-    )
-    @app_commands.describe(
-        email="Your mail.grokbot.com address. Plain is bot; name+tag is routine.",
-        tag="Optional plus-tag. Builds name+tag@ from a plain address (routine).",
-        label="Keyword after the mention that selects this link. Omit for the default.",
-    )
-    async def link_grok_command(
-        interaction: discord.Interaction,
-        email: str,
-        tag: str | None = None,
-        label: str | None = None,
-    ) -> None:
-        await _respond(
-            interaction,
-            lambda: link_grok(
-                bot.registry,
-                bot.connectors,
-                user_id=str(interaction.user.id),
-                email=email,
-                tag=tag,
-                label=label,
             ),
         )
 

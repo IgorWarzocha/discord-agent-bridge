@@ -22,10 +22,7 @@ from discord_agent_bridge.payload import BridgePayload, CallbackInstructions, bu
 from discord_agent_bridge.rate_limit import RateLimiter
 from discord_agent_bridge.registry import Link, Registry
 
-NOT_LINKED = (
-    "You have not connected an agent. Use `/connect` "
-    "(or `/link-grok` for a mail.grokbot.com address)."
-)
+NOT_LINKED = "You have not connected an agent. Use `/connect`."
 
 Handoff = Literal["sent", "failed", "none"]
 

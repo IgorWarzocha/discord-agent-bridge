@@ -47,28 +47,6 @@ def connect_account(
     )
 
 
-def link_grok(
-    registry: Registry,
-    connectors: ConnectorCatalog,
-    *,
-    user_id: str,
-    email: str,
-    tag: str | None,
-    label: str | None,
-) -> CommandResult:
-    options = {"email": email}
-    if tag:
-        options["tag"] = tag
-    return connect_account(
-        registry,
-        connectors,
-        user_id=user_id,
-        connector_type="grokbot",
-        label=label,
-        options=options,
-    )
-
-
 def disconnect_account(
     registry: Registry,
     *,

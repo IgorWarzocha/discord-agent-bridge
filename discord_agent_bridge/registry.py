@@ -141,7 +141,6 @@ class Registry:
 
     def _init(self) -> None:
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._migrate_legacy()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS links (
@@ -154,41 +153,6 @@ class Registry:
             )
             """
         )
-        self._conn.commit()
-
-    def _migrate_legacy(self) -> None:
-        row = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'links'"
-        ).fetchone()
-        if row is None:
-            return
-        columns = {item[1] for item in self._conn.execute("PRAGMA table_info(links)")}
-        if "connector_type" in columns:
-            return
-        self._conn.execute(
-            """
-            CREATE TABLE links_v2 (
-                discord_user_id TEXT NOT NULL,
-                label TEXT NOT NULL,
-                connector_type TEXT NOT NULL,
-                config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                PRIMARY KEY (discord_user_id, label)
-            )
-            """
-        )
-        if "email" in columns:
-            for old in self._conn.execute("SELECT discord_user_id, label, email, mode, created_at FROM links"):
-                config = json.dumps({"email": old["email"], "mode": old["mode"]}, sort_keys=True)
-                self._conn.execute(
-                    """
-                    INSERT INTO links_v2 (discord_user_id, label, connector_type, config_json, created_at)
-                    VALUES (?, ?, 'grokbot', ?, ?)
-                    """,
-                    (old["discord_user_id"], old["label"], config, old["created_at"]),
-                )
-        self._conn.execute("DROP TABLE links")
-        self._conn.execute("ALTER TABLE links_v2 RENAME TO links")
         self._conn.commit()
 
 

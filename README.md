@@ -36,7 +36,6 @@ A link is `type` + optional `label` + config that the type's `validate` method a
 | `/connect type label ...` | Save a link for you. `type` is one of the registered connectors. |
 | `/disconnect` | Remove one label, only the default, or every link you saved. |
 | `/status` | List your links. |
-| `/link-grok email tag label` | Alias of `/connect type:grokbot`. |
 
 `/connect` options: `email` and `tag` (grokbot), `url` (webhook, Hermes, OpenClaw), `secret` (webhook, Hermes), `token` and `agent_id` (OpenClaw). Each connector ignores options it does not use and rejects a config that is missing what it requires.
 
@@ -77,7 +76,7 @@ Resend HTTP API (`https://api.resend.com/emails`). No SMTP.
 | `name@mail.grokbot.com` | `bot` | The Grok Bot itself, as a normal chat. No routine. |
 | `name+tag@mail.grokbot.com` | `routine` | Only the routine listening on that tag. |
 
-`/link-grok` or `/connect type:grokbot email:... tag:...`. A tag option builds `name+tag@` from a plain address. Other domains are rejected.
+`/connect type:grokbot email:... tag:...`. A tag option builds `name+tag@` from a plain address. Other domains are rejected.
 
 The routine's wake carries headers only, so it must read the body. The subject is `[Discord] #channel @user: first words`. The callback curl is in the body.
 
@@ -158,7 +157,7 @@ cp .env.example .env
 python main.py
 ```
 
-Links live in SQLite at `DATABASE_PATH` (default `data/links.sqlite3`). An older grokbot-only database (columns `email` and `mode`) is copied into `connector_type=grokbot` rows on startup. `.env` is gitignored.
+Links live in SQLite at `DATABASE_PATH` (default `data/links.sqlite3`). `.env` is gitignored.
 
 | Variable | Required | Default | Role |
 | --- | --- | --- | --- |
