@@ -6,6 +6,8 @@ The core does not know how an agent is woken. It builds one payload and calls `c
 
 After `/connect`, type `@bot your request` to use your default connection, or `@bot label your request` to select a labelled link. Literal `@bot` text works without choosing an autocomplete mention. A native Discord mention of the bridge works too.
 
+You can also reply to an agent's Discord message with the reply's mention toggle enabled. No extra `@bot` text is needed. The reply text becomes the request and the parent message is included as context. Without an explicit labelled mention, it uses your default connection. It never adopts another user's connection from the parent message. If you turn off the reply mention, include `@bot` yourself.
+
 ## Architecture
 
 ```

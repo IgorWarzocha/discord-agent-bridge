@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from discord_agent_bridge.burst import ChannelMessage
-from discord_agent_bridge.mentions import text_after_mention
+from discord_agent_bridge.mentions import mentions_bot, text_after_mention
 
 _SUBJECT_LIMIT = 140
 _WORDS_LIMIT = 48
@@ -72,7 +72,11 @@ def build_payload(
         user_id=trigger.author_id,
         message_link=trigger.jump_url,
         timestamp=trigger.created_at.astimezone(timezone.utc),
-        instruction=text_after_mention(trigger.content, bot_id),
+        instruction=(
+            text_after_mention(trigger.content, bot_id)
+            if mentions_bot(trigger.content, bot_id)
+            else trigger.content.strip()
+        ),
         tagged_message=trigger.content if trigger.content.strip() else "(no text)",
         parent=parent,
         burst=tuple(burst),

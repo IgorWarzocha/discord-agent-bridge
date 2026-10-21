@@ -21,3 +21,10 @@ def test_text_trigger_and_native_mentions_share_request_parsing(mention) -> None
 ])
 def test_unrelated_handles_and_email_do_not_trigger(content) -> None:
     assert not mentions_bot(content, "42")
+
+
+def test_discord_reply_mention_admits_followup_without_text_tag() -> None:
+    message = SimpleNamespace(content="you seein this reply?", mentions=[SimpleNamespace(id=42)])
+    assert _targets_bot(message, 42)
+    message.mentions = []
+    assert not _targets_bot(message, 42)

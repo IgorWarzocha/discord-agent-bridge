@@ -2,7 +2,7 @@ from datetime import timedelta
 
 from discord_agent_bridge.burst import build_burst, build_tail
 from discord_agent_bridge.connectors.grokbot import render_email
-from discord_agent_bridge.payload import CallbackInstructions, build_payload, render_task
+from discord_agent_bridge.payload import CallbackInstructions, build_payload, render_task, to_json
 from tests.support import T0, message
 
 
@@ -73,3 +73,16 @@ def test_subject_body_and_callback_block() -> None:
     assert long_payload.subject.endswith("...")
     assert "not configured (set CALLBACK_BASE_URL" in render_task(long_payload)
     assert ("alpha " * 20) + "\nbeta" in render_task(long_payload)
+
+
+def test_reply_without_explicit_mention_keeps_request_in_json() -> None:
+    trigger = message("10", "you seein this reply?", 0)
+    parent = message("9", "Walter here", -5, author_id="42", author_name="bot")
+    payload = build_payload(
+        channel_name="test", trigger=trigger, parent=parent,
+        burst=(trigger,), tail=(), bot_id="42", label=None, callback=None,
+    )
+    assert payload.instruction == "you seein this reply?"
+    assert to_json(payload)["instruction"] == "you seein this reply?"
+    assert payload.subject == "[Discord] #test @ada: you seein this reply?"
+    assert "Walter here" in to_json(payload)["parent"]
