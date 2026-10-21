@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-_DUMMY_DIGEST = hashlib.sha256(b"discord-grokbot-bridge-miss").hexdigest()
+_DUMMY_DIGEST = hashlib.sha256(b"discord-agent-bridge-miss").hexdigest()
 
 
 class CallbackError(Exception):

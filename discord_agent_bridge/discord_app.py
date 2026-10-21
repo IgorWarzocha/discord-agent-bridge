@@ -13,26 +13,33 @@ from datetime import datetime, timedelta, timezone
 import discord
 from discord import app_commands
 
-from grokbot_bridge.burst import ChannelMessage
-from grokbot_bridge.callbacks import CallbackStore
-from grokbot_bridge.commands import CommandResult, link_account, status_account, unlink_account
-from grokbot_bridge.discord_sink import DiscordSink, react_handoff
-from grokbot_bridge.hops import decide_forward, hop_limit_message
-from grokbot_bridge.http_api import serve_in_thread, stop_http
-from grokbot_bridge.mentions import mentions_bot
-from grokbot_bridge.rate_limit import RateLimiter
-from grokbot_bridge.registry import Registry
-from grokbot_bridge.replies import CallbackService
-from grokbot_bridge.resend import ResendError, ResendSender
-from grokbot_bridge.routing import MentionContext, OpenCallbacks, deliver_mention
-from grokbot_bridge.settings import Settings
+from discord_agent_bridge.burst import ChannelMessage
+from discord_agent_bridge.callbacks import CallbackStore
+from discord_agent_bridge.commands import (
+    CommandResult,
+    connect_account,
+    disconnect_account,
+    link_grok,
+    status_account,
+)
+from discord_agent_bridge.connectors.catalog import CONNECTOR_TYPES, ConnectorCatalog
+from discord_agent_bridge.discord_sink import DiscordSink, react_handoff
+from discord_agent_bridge.hops import decide_forward, hop_limit_message
+from discord_agent_bridge.http_api import serve_in_thread, stop_http
+from discord_agent_bridge.mentions import mentions_bot
+from discord_agent_bridge.rate_limit import RateLimiter
+from discord_agent_bridge.registry import Registry
+from discord_agent_bridge.replies import CallbackService
+from discord_agent_bridge.routing import MentionContext, OpenCallbacks, deliver_mention
+from discord_agent_bridge.settings import Settings
 
-logger = logging.getLogger("grokbot_bridge")
+logger = logging.getLogger("discord_agent_bridge")
 
 _HISTORY_PAGE = 100
 _HISTORY_CAP = 300
-_LINK_DESCRIPTION = "Link your Grok Bot. A plain address is bot mode; a plus-tag is routine mode."
-_STATUS_DESCRIPTION = "Show your linked bot and routine addresses."
+_CONNECT_DESCRIPTION = "Connect an agent. type chooses grokbot, webhook, hermes, or openclaw."
+_STATUS_DESCRIPTION = "Show your connected agents, labels, and addresses."
+_TYPE_CHOICES = [app_commands.Choice(name=name, value=name) for name in CONNECTOR_TYPES]
 
 
 def build_intents() -> discord.Intents:
@@ -54,7 +61,7 @@ class BridgeBot(discord.Client):
         settings: Settings,
         registry: Registry,
         limiter: RateLimiter,
-        sender: ResendSender,
+        connectors: ConnectorCatalog,
         callbacks: CallbackStore | None = None,
         callback_limiter: RateLimiter | None = None,
     ) -> None:
@@ -62,7 +69,7 @@ class BridgeBot(discord.Client):
         self.settings = settings
         self.registry = registry
         self.limiter = limiter
-        self.sender = sender
+        self.connectors = connectors
         self.callbacks = callbacks
         self.callback_limiter = callback_limiter
         self._http = None
@@ -126,7 +133,8 @@ class BridgeBot(discord.Client):
 
     async def _deliver(self, message: discord.Message, hop: int, root_id: str) -> None:
         assert self.user is not None
-        outcome = deliver_mention(
+        outcome = await asyncio.to_thread(
+            deliver_mention,
             MentionContext(
                 author_id=str(message.author.id),
                 bot_id=str(self.user.id),
@@ -140,23 +148,15 @@ class BridgeBot(discord.Client):
             ),
             self.registry,
             self.limiter,
+            self.connectors,
             window=timedelta(seconds=self.settings.burst_window_seconds),
             gap=timedelta(seconds=self.settings.burst_gap_seconds),
             tail_count=self.settings.channel_tail_count,
             callbacks=self._open_callbacks(),
         )
-        if outcome.mail is None:
-            await message.reply(outcome.channel_reply)
-            return
-        try:
-            await asyncio.to_thread(self.sender.send, outcome.mail)
-        except ResendError as exc:
-            logger.warning("resend status=%s user=%s", exc.status, message.author.id)
-            await react_handoff(message, sent=False)
-            await message.reply(_resend_reply(exc))
-            return
-        await react_handoff(message, sent=True)
-        logger.info("mention user=%s sent=true", message.author.id)
+        if outcome.handoff != "none":
+            await react_handoff(message, sent=outcome.handoff == "sent")
+        logger.info("mention user=%s handoff=%s", message.author.id, outcome.handoff)
         await message.reply(outcome.channel_reply)
 
     def _open_callbacks(self) -> OpenCallbacks | None:
@@ -239,13 +239,52 @@ class BridgeBot(discord.Client):
 def register_commands(bot: BridgeBot) -> None:
     """The caller is always interaction.user. One user cannot link another."""
 
-    @bot.tree.command(name="link-grok", description=_LINK_DESCRIPTION)
+    @bot.tree.command(name="connect", description=_CONNECT_DESCRIPTION)
+    @app_commands.describe(
+        type="Which agent receives your mentions.",
+        label="Keyword after the mention that selects this link. Omit for the default.",
+        email="Grokbot address on mail.grokbot.com. Plain is bot; name+tag is routine.",
+        tag="Grokbot plus-tag. Builds name+tag@ from a plain address.",
+        url="HTTPS URL for webhook, Hermes, or OpenClaw.",
+        secret="HMAC secret for webhook or Hermes. Never shown in status.",
+        token="OpenClaw hook token. Never shown in status.",
+        agent_id="Optional OpenClaw agentId.",
+    )
+    @app_commands.choices(type=_TYPE_CHOICES)
+    async def connect(
+        interaction: discord.Interaction,
+        type: str,
+        label: str | None = None,
+        email: str | None = None,
+        tag: str | None = None,
+        url: str | None = None,
+        secret: str | None = None,
+        token: str | None = None,
+        agent_id: str | None = None,
+    ) -> None:
+        options = _options(email=email, tag=tag, url=url, secret=secret, token=token, agent_id=agent_id)
+        await _respond(
+            interaction,
+            lambda: connect_account(
+                bot.registry,
+                bot.connectors,
+                user_id=str(interaction.user.id),
+                connector_type=type,
+                label=label,
+                options=options,
+            ),
+        )
+
+    @bot.tree.command(
+        name="link-grok",
+        description="Connect a Grok Bot email. Plain is bot mode; a plus-tag is routine mode.",
+    )
     @app_commands.describe(
         email="Your mail.grokbot.com address. Plain is bot; name+tag is routine.",
         tag="Optional plus-tag. Builds name+tag@ from a plain address (routine).",
-        label="Keyword after @Grokbot that selects this link. Omit for the default.",
+        label="Keyword after the mention that selects this link. Omit for the default.",
     )
-    async def link_grok(
+    async def link_grok_command(
         interaction: discord.Interaction,
         email: str,
         tag: str | None = None,
@@ -253,8 +292,9 @@ def register_commands(bot: BridgeBot) -> None:
     ) -> None:
         await _respond(
             interaction,
-            lambda: link_account(
+            lambda: link_grok(
                 bot.registry,
+                bot.connectors,
                 user_id=str(interaction.user.id),
                 email=email,
                 tag=tag,
@@ -262,22 +302,19 @@ def register_commands(bot: BridgeBot) -> None:
             ),
         )
 
-    @bot.tree.command(
-        name="unlink-grok",
-        description="Remove one label, only the default link, or every link you saved.",
-    )
+    @bot.tree.command(name="disconnect", description="Remove one label, the default link, or every link.")
     @app_commands.describe(
         label="Remove only this labeled link.",
         only_default="Remove only the unlabeled default link.",
     )
-    async def unlink_grok(
+    async def disconnect(
         interaction: discord.Interaction,
         label: str | None = None,
         only_default: bool = False,
     ) -> None:
         await _respond(
             interaction,
-            lambda: unlink_account(
+            lambda: disconnect_account(
                 bot.registry,
                 user_id=str(interaction.user.id),
                 label=label,
@@ -285,13 +322,12 @@ def register_commands(bot: BridgeBot) -> None:
             ),
         )
 
-    @bot.tree.command(name="grok-status", description=_STATUS_DESCRIPTION)
-    async def grok_status(interaction: discord.Interaction) -> None:
-        await _respond(interaction, lambda: status_account(bot.registry, str(interaction.user.id)))
-
-    @bot.tree.command(name="link-status", description=_STATUS_DESCRIPTION)
-    async def link_status(interaction: discord.Interaction) -> None:
-        await _respond(interaction, lambda: status_account(bot.registry, str(interaction.user.id)))
+    @bot.tree.command(name="status", description=_STATUS_DESCRIPTION)
+    async def status(interaction: discord.Interaction) -> None:
+        await _respond(
+            interaction,
+            lambda: status_account(bot.registry, bot.connectors, str(interaction.user.id)),
+        )
 
 
 async def _respond(
@@ -334,12 +370,8 @@ def _channel_name(channel: object) -> str:
     return "dm"
 
 
-def _resend_reply(exc: ResendError) -> str:
-    if exc.status:
-        return (
-            f"Could not email your Grok Bot (Resend returned {exc.status}). Nothing was sent."
-        )
-    return "Could not reach Resend. Nothing was sent."
+def _options(**values: str | None) -> dict[str, str]:
+    return {key: value.strip() for key, value in values.items() if value and value.strip()}
 
 
 async def _safe_reply(message: discord.Message, text: str) -> None:

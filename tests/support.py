@@ -2,8 +2,8 @@
 
 from datetime import datetime, timedelta, timezone
 
-from grokbot_bridge.burst import ChannelMessage
-from grokbot_bridge.resend import HttpResponse
+from discord_agent_bridge.burst import ChannelMessage
+from discord_agent_bridge.connectors.http_post import HttpResult as HttpResponse
 
 T0 = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
 

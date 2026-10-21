@@ -1,6 +1,6 @@
 import asyncio
 
-from grokbot_bridge.discord_sink import handoff_emoji, post_reply, react_handoff
+from discord_agent_bridge.discord_sink import handoff_emoji, post_reply, react_handoff
 
 
 class _Sent:

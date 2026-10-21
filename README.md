@@ -1,115 +1,150 @@
-# Discord → Grok Bot bridge
+# Discord agent bridge
 
-When someone in a Discord channel mentions this bot, the bridge emails **that person's** own Grok Bot. Nothing is hardwired to one account. A mention from Ada goes to Ada's address. Bob's mention goes to Bob's, and only if Bob has linked one.
+A Discord mention is delivered to the agent **that user** connected. Grok Bot is one connector. Webhook, Hermes, and OpenClaw are others. Nothing is hardwired to one account.
 
-A plain address wakes the bot itself. A plus-tagged address fires one routine. Those are equal modes:
+The core does not know how an agent is woken. It builds one payload and calls `connector.deliver`.
 
-| Mode | Address | What wakes |
-| --- | --- | --- |
-| `bot` | `name@mail.grokbot.com` | The Grok Bot, as a normal chat. No routine. |
-| `routine` | `name+tag@mail.grokbot.com` | Only the routine listening on that tag. |
+## Architecture
 
-Mail is sent with Resend's HTTP API (`https://api.resend.com/emails`). There is no SMTP client. A callback in the email lets that bot post its answer back into the original Discord thread.
+```
+Discord mention
+  -> burst + earlier channel + reply parent
+  -> BridgePayload
+  -> the link's connector
+```
 
-## Selection
+| Piece | Owns |
+| --- | --- |
+| `discord_agent_bridge/discord_app.py` | The only Discord client. Slash commands and the mention listener. |
+| `discord_agent_bridge/burst.py` | Same-author burst and the earlier-channel tail. |
+| `discord_agent_bridge/payload.py` | `BridgePayload`, the subject line, the plain-text task, and the JSON object. |
+| `discord_agent_bridge/registry.py` | SQLite links: Discord user, label, connector type, validated config. |
+| `discord_agent_bridge/routing.py` | Label selection, rate limit, callback token, `deliver`. |
+| `discord_agent_bridge/callbacks.py` | Hashed reply tokens and hop tracking. |
+| `discord_agent_bridge/replies.py` | `POST /reply/<token>` and `POST /react/<token>`. |
+| `discord_agent_bridge/hops.py` | The bridge never retriggers itself. Other bots need an allowlist. |
+| `discord_agent_bridge/connectors/` | One module per agent, registered in `catalog.py`. |
 
-A Discord user can save several links. Each link has an optional label.
+A link is `type` + optional `label` + config that the type's `validate` method accepted. The first word after the bot mention selects a label. Anything else uses the unlabeled default. If every link has a label and none matches, the earliest link is used.
 
-The first word **after** the bot mention is the keyword:
-
-- `@Grokbot research summarize the thread` selects the link labeled `research`.
-- `@Grokbot please research this` does not. The first word is `please`, so the default link is used.
-- `research @Grokbot hello` does not select `research` either. Words before the mention are ignored. The keyword is `hello`.
-- The match is the whole first word, case-insensitive. `Research` matches `research`. `research,` does not.
-- The keyword stays in the email. It only chooses the recipient.
-
-The default is the link saved without a label. If every link has a label and none matches, the earliest link that user saved is used. The label `default` is reserved for that unlabeled link.
-
-`/grok-status` shows the exact stored address (lowercased) so the plus-tag stays recognizable. That reply is ephemeral. The public channel reply after a mention does not repeat the address.
+`/status` shows the connector's `describe` text. Secrets (webhook HMAC, Hermes secret, OpenClaw token) are not included.
 
 ## Commands
 
 | Command | What it does |
 | --- | --- |
-| `/link-grok email tag label` | Save a link for **you**. `email` is required. `tag` and `label` are optional. |
-| `/unlink-grok label only_default` | `label` removes that link. `only_default` removes the unlabeled one. With neither, every link of yours is removed. |
-| `/grok-status` and `/link-status` | List your links as `bot` or `routine`, the label, and the exact address. |
+| `/connect type label ...` | Save a link for you. `type` is one of the registered connectors. |
+| `/disconnect` | Remove one label, only the default, or every link you saved. |
+| `/status` | List your links. |
+| `/link-grok email tag label` | Alias of `/connect type:grokbot`. |
 
-`email` must be on `mail.grokbot.com`. Anything else is rejected.
+`/connect` options: `email` and `tag` (grokbot), `url` (webhook, Hermes, OpenClaw), `secret` (webhook, Hermes), `token` and `agent_id` (OpenClaw). Each connector ignores options it does not use and rejects a config that is missing what it requires.
 
-- `ada@mail.grokbot.com` is `bot`.
-- `ada+research@mail.grokbot.com` is `routine`.
-- `email: ada@mail.grokbot.com` plus `tag: research` is stored as `ada+research@mail.grokbot.com` (`routine`).
-- A tag option on an address that already has a plus-tag is rejected, so the saved address cannot change by accident.
+## Reply path
 
-Addresses and labels are stored in lowercase. You can save 20 links. Linking the same label again replaces that address.
+When `CALLBACK_BASE_URL` is set and the connector's `supports_callback` is true, the payload includes a callback. Every connector in this repo sets that flag, because each one hands the agent text it can act on.
 
-## What the email contains
+`POST /reply/<token>` with `{"text":"..."}` replies to the original tagged message as `↩ reply from <user>'s Grok Bot`, split at 2000 characters, with mentions disabled. The link allows **5 posts** and lasts **24 hours**. `CALLBACK_TTL_HOURS=0` does not expire. `POST /react/<token>` with `{"emoji":"👀"}` adds `👀` `✅` `❌` `⏳` or `👍` and does not use a post. Both share the per-channel callback rate limit.
 
-Subject, on every mail:
+The bridge reacts `📨` when delivery succeeds and `⚠️` when it fails.
 
-```text
-[Discord] #channel @username: first words
+The bridge's own messages never start another delivery. Other bots and webhooks are ignored unless their user id is in `BOT_ALLOWLIST`. After `MAX_HOPS` bot-to-bot mentions (default 3) the thread stops.
+
+## Burst
+
+From the tagged message, walk backward through that author's messages. Keep a message when it is inside 45 seconds and the gap to the next newer message from that author is at most 5 seconds. Other people do not join or split the burst. Then add up to 5 earlier channel messages, excluding the burst and the reply parent, under a separate heading.
+
+## Write a connector
+
+1. Add `discord_agent_bridge/connectors/<name>.py`.
+2. Set `type` to a new member of `ConnectorType` in `connectors/protocol.py`.
+3. Implement `validate`, `describe`, and `deliver`. `describe` must not return secrets. `deliver` receives a `BridgePayload` and returns `DeliveryResult`.
+4. Set `capabilities = Capabilities(supports_callback=True)` if the agent can read the callback instructions and POST back. Otherwise set it false and the core omits the callback.
+5. Register the instance in `build_connectors` in `connectors/catalog.py`.
+
+`validate` is the schema. It receives the slash-command options that the user filled in (`email`, `tag`, `url`, `secret`, `token`, `agent_id`) and returns the dict stored in SQLite. Reject anything that is not a real configuration for that agent.
+
+Do not send from tests. Pass a fake `HttpTransport` or `ResendSender` transport.
+
+## Connectors
+
+### grokbot
+
+Resend HTTP API (`https://api.resend.com/emails`). No SMTP.
+
+| Address | Mode | What wakes |
+| --- | --- | --- |
+| `name@mail.grokbot.com` | `bot` | The Grok Bot itself, as a normal chat. No routine. |
+| `name+tag@mail.grokbot.com` | `routine` | Only the routine listening on that tag. |
+
+`/link-grok` or `/connect type:grokbot email:... tag:...`. A tag option builds `name+tag@` from a plain address. Other domains are rejected.
+
+The routine's wake carries headers only, so it must read the body. The subject is `[Discord] #channel @user: first words`. The callback curl is in the body.
+
+Install `skills/grokbot/SKILL.md` as a user skill named `grokbot` on that bot (plain address) or on the routine (plus-tag). The bridge does not install it.
+
+Routine triggers default to `requireAuthPass`. The Resend domain in `RESEND_FROM` must be verified with SPF and DKIM aligned, and DMARC must pass, or the routine will not fire.
+
+### webhook
+
+Generic signed HTTPS POST of the normalised JSON (`BridgePayload` via `to_json`).
+
+```
+POST <url>
+X-Webhook-Timestamp: <unix seconds>
+X-Webhook-Signature: sha256=<hex HMAC-SHA256 of "{timestamp}.{raw body}">
 ```
 
-The body is plain text:
+The secret is at least 16 characters and is not shown by `/status`. This is the bridge's own signature, for anything that can verify an HMAC. It is not a vendor API.
 
-- Channel name, Discord username, user id, message link, timestamp.
-- Mode (`bot` or `routine`), label (or `default`), and the exact `To` address.
-- A reply block: the callback URL, a curl example, the JSON shape, the post budget, and the size limit. See [Replying to Discord](#replying-to-discord).
-- The full tagged message, including the instruction after the mention.
-- The parent message when the mention was a reply, or `not a reply`.
-- A burst of the same author's recent messages, oldest first.
-- Up to five earlier channel messages, under a separate heading, not mixed into the burst.
+### hermes
 
-Burst rules:
+Nous Research Hermes Agent accepts inbound POSTs on a webhook route.
 
-- Look back **45 seconds** from the tagged message (this is inside the 30–60 second range; `BURST_WINDOW_SECONDS` may be set from 30 to 60).
-- Walk backward through **that author's** messages only. Other people do not join the burst and do not split it.
-- Stop at a gap longer than **5 seconds** between that author's consecutive messages (`BURST_GAP_SECONDS` may be set from 2 to 10).
-- A gap of exactly 5 seconds is still inside the burst. The message 6 seconds earlier is not, even if it is inside the 45 second window.
+- Guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks
+- Signature check in the gateway: https://github.com/NousResearch/hermes-agent/blob/72ff3e90/gateway/platforms/webhook.py
 
-The rate limit is **5 emails per 10 minutes per Discord user**, shared across that user's links. It is counted when a mention is accepted for sending, including when Resend later returns an error. It lives in memory and resets on restart. An author with no link does not consume a slot; the bot replies that they should use `/link-grok`.
+Point `url` at the route, for example `https://hermes.example/webhooks/discord`. `secret` is that route's HMAC secret (or the gateway `WEBHOOK_SECRET` fallback). The default port in the Hermes docs is `8644`, path `/webhooks/<route>`.
 
-## Grok Bot setup
+The bridge sends the normalised JSON as the body. With no `prompt` template, Hermes dumps that JSON into the agent prompt. Two signatures are sent, matching the docs:
 
-Each person links an address on **their** Grok Bot. The bridge does not create bots or routines.
+- `X-Webhook-Signature`: HMAC-SHA256 hex of the raw body (V1, what the gateway source above checks).
+- `X-Webhook-Signature-V2` plus `X-Webhook-Timestamp`: HMAC-SHA256 hex of `{timestamp}.{body}` (V2, recommended in the guide, timestamp within ±300 seconds).
 
-### bot — plain address
+### openclaw
 
-Use `/link-grok` with `name@mail.grokbot.com` and no tag.
+OpenClaw's gateway accepts authenticated hook POSTs.
 
-Mail to that address wakes the Grok Bot itself: a normal chat-style wake. You do not create a routine for this mode. The bot should treat the email body as the task. The subject is `[Discord] #channel @user: first words`.
+- https://docs.openclaw.ai/gateway/config-hooks
+- https://docs.openclaw.ai/automation/cron-jobs/webhooks
 
-### routine — tagged address
+`url` is the gateway origin (`https://gateway.example.com`) or the full `.../hooks/agent` URL. `token` is the hook token (`Authorization: Bearer`). Optional `agent_id` is sent as `agentId`.
 
-Use either `name+tag@mail.grokbot.com`, or a plain address plus the `tag` option.
-
-Mail to that address fires **only** the routine whose email trigger listens on that tag. It does not wake the bot's other routines, and it is not the plain chat wake.
-
-The routine's wake carries headers only. The subject line is what that wake sees first. The routine reads the body itself and should treat the body as the task. The callback URL is in that body, so the routine has to read the body before it can answer in Discord.
-
-Routine email triggers default to `requireAuthPass`. SPF, DKIM, and DMARC must all pass. If they do not, the routine will not fire.
+The bridge POSTs `{"message": "<task text>", "name": "Discord", "deliver": false}`. `message` is required by the docs. `deliver: false` skips OpenClaw announcing to some other channel; the callback URL is inside the message so the agent posts back here. The token is not written into the body and is not shown by `/status`.
 
 ## Discord
 
-1. Create an application and a bot at the Discord developer portal. Copy the bot token into `DISCORD_BOT_TOKEN`.
-2. Turn on privileged **Message Content Intent**. Without it the bot cannot read the instruction after the mention.
-3. The bot requests three intents only: **Guilds**, **Guild Messages**, and **Message Content**. It does not request members or presences.
-4. Invite it with the `bot` and `applications.commands` scopes, and with permission to view the channel, send messages, read message history, and add reactions.
-5. For local development set `DISCORD_GUILD_ID` to that server's id so slash commands appear immediately. With it empty, commands are synced globally and Discord can take up to an hour to show them.
+1. Create an application and a bot. Put the token in `DISCORD_BOT_TOKEN`.
+2. Turn on privileged **Message Content Intent**.
+3. The process requests **Guilds**, **Guild Messages**, and **Message Content** only.
+4. Invite it with scopes `bot` and `applications.commands`, and permission to view the channel, send messages, read message history, and add reactions.
+5. Set `DISCORD_GUILD_ID` while developing so slash commands appear immediately. Without it, global sync can take up to an hour.
 
-This repository does not connect to Discord on its own. `python main.py` is what logs in.
+`python main.py` is what logs in. Tests do not.
 
 ## Resend
 
-Create an API key and set `RESEND_API_KEY`.
+`RESEND_API_KEY` and `RESEND_FROM` on a verified domain. SPF and DKIM must align with that From domain. Routine email triggers default to `requireAuthPass` (SPF, DKIM, and DMARC). If they do not pass, a grokbot routine will not fire.
 
-Set `RESEND_FROM` to an address on a domain you have verified in Resend, for example `Grokbot Bridge <bridge@your-verified-domain.com>`.
+## Hosting
 
-Verify that domain and enable SPF and DKIM. The domain in `RESEND_FROM` has to **align** with those records. Routine triggers default to `requireAuthPass`, so SPF, DKIM, and DMARC must pass. If the sending domain is not aligned, the message may be accepted by Resend and still **not fire the routine**.
+Run this on the always-on server. Agents that answer through the callback must reach `POST /reply/<token>` and `POST /react/<token>`, so `CALLBACK_BASE_URL` has to be public HTTPS. The process binds `127.0.0.1:8787` by default and does not open a public port. Nothing here starts a tunnel.
 
-`bot` mode is still ordinary email from that same From address. Use a verified, aligned domain for both modes.
+Choose one:
+
+- **Cloudflare Tunnel** (`cloudflared`) from `127.0.0.1:8787` to a hostname you control. Set `CALLBACK_BASE_URL` to that `https://` origin.
+- **Caddy or nginx** on the server, with a real certificate, proxying to `127.0.0.1:8787`. Keep the app port off the public firewall.
+- **Tailscale Funnel** only if the agent that answers can open that URL. A tailnet the agent is outside of will not work.
 
 ## Run locally
 
@@ -120,99 +155,45 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-# fill DISCORD_BOT_TOKEN, RESEND_API_KEY, and RESEND_FROM
 python main.py
 ```
 
-Links are stored in SQLite at `DATABASE_PATH` (default `data/links.sqlite3`) and survive restarts. `.env` is gitignored. Do not commit tokens.
+Links live in SQLite at `DATABASE_PATH` (default `data/links.sqlite3`). An older grokbot-only database (columns `email` and `mode`) is copied into `connector_type=grokbot` rows on startup. `.env` is gitignored.
 
 | Variable | Required | Default | Role |
 | --- | --- | --- | --- |
 | `DISCORD_BOT_TOKEN` | yes | | Bot token |
 | `DISCORD_GUILD_ID` | no | global sync | Server id for fast slash-command sync |
-| `RESEND_API_KEY` | yes | | Resend HTTP API key |
+| `RESEND_API_KEY` | yes | | Used by the grokbot connector |
 | `RESEND_FROM` | yes | | Verified, SPF/DKIM-aligned sender |
 | `DATABASE_PATH` | no | `data/links.sqlite3` | SQLite file |
-| `RATE_LIMIT_MAX` | no | `5` | Sends per user per window |
-| `RATE_LIMIT_WINDOW_SECONDS` | no | `600` | Rate-limit window |
+| `RATE_LIMIT_MAX` | no | `5` | Deliveries per Discord user per window |
+| `RATE_LIMIT_WINDOW_SECONDS` | no | `600` | That window |
 | `BURST_WINDOW_SECONDS` | no | `45` | Lookback, 30–60 |
 | `BURST_GAP_SECONDS` | no | `5` | Same-author gap, 2–10 |
-| `CHANNEL_TAIL_COUNT` | no | `5` | Earlier channel messages, 0–10 |
-| `CALLBACK_BASE_URL` | no | empty | Public https base for `/reply/` and `/react/`. No callback is issued when this is empty |
-| `CALLBACK_TTL_HOURS` | no | `24` | Link lifetime. `0` means the link does not expire |
-| `CALLBACK_MAX_POSTS` | no | `5` | Text posts per link. Reactions do not use this budget |
-| `CALLBACK_TEXT_LIMIT` | no | `8000` | Maximum `text` length. Discord still caps a single message at 2000 |
-| `CALLBACK_RATE_LIMIT_MAX` | no | `20` | Callback posts and reactions per channel per window |
+| `CHANNEL_TAIL_COUNT` | no | `5` | Earlier channel messages |
+| `CALLBACK_BASE_URL` | no | empty | Public https base. Empty means no callback is issued |
+| `CALLBACK_TTL_HOURS` | no | `24` | `0` means the link does not expire |
+| `CALLBACK_MAX_POSTS` | no | `5` | Text posts per link |
+| `CALLBACK_TEXT_LIMIT` | no | `8000` | Maximum reply `text` |
+| `CALLBACK_RATE_LIMIT_MAX` | no | `20` | Callback posts and reactions per channel |
 | `CALLBACK_RATE_LIMIT_WINDOW_SECONDS` | no | `600` | Callback rate-limit window |
 | `MAX_HOPS` | no | `3` | Bot-to-bot mentions forwarded in one thread |
-| `BOT_ALLOWLIST` | no | empty | Comma-separated user ids of bots or webhooks allowed to mention this bot |
-| `HTTP_HOST` | no | `127.0.0.1` | Callback bind address. Localhost until you choose how to expose it |
+| `BOT_ALLOWLIST` | no | empty | Discord user ids allowed to mention this bot |
+| `HTTP_HOST` | no | `127.0.0.1` | Callback bind address |
 | `HTTP_PORT` | no | `8787` | Callback bind port |
 
-## Replying to Discord
-
-Each outbound email, when `CALLBACK_BASE_URL` is set, includes a fresh link tied to that channel, that message, and that Discord user. The block contains the URL, a curl example, and the JSON.
-
-`POST /reply/<token>` with `{"text":"..."}` posts the text as a reply to the **original tagged message**. The visible line is `↩ reply from <user>'s Grok Bot`. Text longer than 2000 characters is split into several replies, each still aimed at that original message. An optional `"reaction"` on the same JSON adds an emoji as well.
-
-`POST /react/<token>` with `{"emoji":"👀"}` adds a reaction to that same message. The only accepted emoji are `👀` `✅` `❌` `⏳` `👍`.
-
-The link allows **5 posts** and lasts **24 hours** unless you change `CALLBACK_MAX_POSTS` or `CALLBACK_TTL_HOURS`. `CALLBACK_TTL_HOURS=0` does not expire. A post is rejected only after the link is expired or those 5 posts are used. Reactions do not spend a post. They do count toward the per-channel callback rate limit (20 per 10 minutes by default).
-
-When the email is sent, the bridge reacts `📨` on the tagged message. If Resend rejects it, the bridge reacts `⚠️` instead. Those two are not available to the callback.
-
-A Grok Bot, whether it woke as `bot` or as `routine`, should follow `grokbot-skill/discord-bridge/SKILL.md`: ack quickly, prefer one short final answer, and at most one progress note.
-
-### Install the skill
-
-Copy the folder `grokbot-skill/discord-bridge` into the user-skills directory of the Grok Bot that receives the mail. The skill name is `discord-bridge`. Install it on the bot for a plain address. Install it on the routine for a plus-tag. The bridge does not install it for you. `bot` and `routine` use the same skill: the subject identifies the mail, and the body holds the task and the callback.
-
-### Hosting
-
-This process is meant to run on Igor's always-on server. Grok Bot has to reach `POST /reply/<token>` and `POST /react/<token>`, so `CALLBACK_BASE_URL` must be a public HTTPS URL. The server binds `127.0.0.1:8787` by default and does not open a public port. Nothing in this repo starts a tunnel.
-
-Igor chooses how the endpoint is exposed:
-
-- **Cloudflare Tunnel** (`cloudflared`) from `127.0.0.1:8787` to a hostname you control. Set `CALLBACK_BASE_URL` to that `https://` hostname. This is the straightforward option when the bot is not on the same private network as the server.
-- **Caddy or nginx** on the server, with a real certificate, proxying to `127.0.0.1:8787`. Keep the app port off the public firewall.
-- **Tailscale Funnel** (or another overlay) only works if the Grok Bot worker that answers mail can open that URL. A tailnet that the bot is outside of will not do. A public HTTPS name is the reliable choice.
-
-### Security
-
-- The token is 32 bytes, url-safe, stored as SHA-256, and compared with `hmac.compare_digest`. The raw token is only in the email.
-- Unknown tokens are rejected. Expired tokens are rejected. A token with no posts left rejects further text. Logs record the route (`reply` or `react`), status, Discord user id, and channel id. They do not record the token or the reply text.
-- Callback posts use Discord `allowed_mentions` with an empty parse list, and `mention_author` is off. Text can contain `@Grokbot`, `@everyone`, a user, or a role, and none of them ping.
-- Messages the bridge posts are its own and never start another email. Other bots and webhooks are ignored unless their user id is listed in `BOT_ALLOWLIST`. After `MAX_HOPS` bot-to-bot mentions (default 3) the bridge stops forwarding that thread.
-- The callback token is a secret. The skill tells the bot not to paste it back into Discord.
-
 ## Tests
-
-Unit tests mock Discord and Resend. They open no sockets and do not send mail.
 
 ```bash
 python -m pytest
 ```
 
-Burst building, plus-tag validation, link selection, the subject and callback block, token lifetime, mention suppression, hop limits, and reactions are covered without a live server. The tests do not bind the callback port.
+The suite is small and does not connect to Discord, Resend, Hermes, or OpenClaw. HTTP connectors use a fake transport. The tests block socket connect and bind.
 
-## Layout
+## Security
 
-| Module | Owns |
-| --- | --- |
-| `grokbot_bridge/address.py` | `mail.grokbot.com` validation, `bot` vs `routine` |
-| `grokbot_bridge/registry.py` | SQLite links, labels, the 20-link cap |
-| `grokbot_bridge/mentions.py` | The keyword after the mention |
-| `grokbot_bridge/burst.py` | Burst and earlier-channel tail |
-| `grokbot_bridge/payload.py` | Subject and plain-text body |
-| `grokbot_bridge/routing.py` | Which of the author's links is used |
-| `grokbot_bridge/commands.py` | `/link-grok`, `/unlink-grok`, status text |
-| `grokbot_bridge/resend.py` | Resend HTTP send |
-| `grokbot_bridge/callbacks.py` | Hashed callback tokens and hop tracking |
-| `grokbot_bridge/replies.py` | Reply JSON, chunks, emoji allowlist |
-| `grokbot_bridge/hops.py` | Bot-to-bot hop limit |
-| `grokbot_bridge/http_api.py` | `POST /reply` and `POST /react` |
-| `grokbot_bridge/discord_sink.py` | Discord replies with mentions off |
-| `grokbot_bridge/discord_app.py` | Discord client and callback server startup |
-| `grokbot_bridge/settings.py` | Environment |
-| `grokbot-skill/discord-bridge/SKILL.md` | User skill for the Grok Bot that answers |
-| `main.py` | Process entry. This connects to Discord and, when a base URL is set, listens for callbacks. |
+- Callback tokens are random, stored as SHA-256, and compared with `hmac.compare_digest`.
+- Logs record the callback route, status, user id, and channel id. They do not record the token, the reply text, or connector secrets.
+- Discord replies use `allowed_mentions` with an empty parse list, and `mention_author` is off.
+- Webhook and Hermes signatures use HMAC-SHA256. The OpenClaw token is sent only as a Bearer header.

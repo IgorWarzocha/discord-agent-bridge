@@ -8,10 +8,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from grokbot_bridge.callbacks import CallbackError, CallbackStore, CallbackTicket
-from grokbot_bridge.rate_limit import RateLimiter
+from discord_agent_bridge.callbacks import CallbackError, CallbackStore, CallbackTicket
+from discord_agent_bridge.rate_limit import RateLimiter
 
-logger = logging.getLogger("grokbot_bridge")
+logger = logging.getLogger("discord_agent_bridge")
 
 DISCORD_LIMIT = 2000
 RAW_BODY_LIMIT = 32 * 1024

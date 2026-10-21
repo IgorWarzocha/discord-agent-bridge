@@ -8,7 +8,7 @@ import urllib.request
 from collections.abc import Mapping
 from typing import NamedTuple, Protocol
 
-from grokbot_bridge.payload import OutboundMail
+from discord_agent_bridge.payload import OutboundMail
 
 RESEND_EMAILS_URL = "https://api.resend.com/emails"
 
@@ -82,7 +82,7 @@ class ResendSender:
         headers = {
             "Authorization": f"Bearer {self._api_key}",
             "Accept": "application/json",
-            "User-Agent": "discord-grokbot-bridge",
+            "User-Agent": "discord-agent-bridge",
         }
         response = self._transport.post_json(RESEND_EMAILS_URL, headers, payload)
         if response.status < 200 or response.status >= 300:

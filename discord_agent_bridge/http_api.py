@@ -6,9 +6,9 @@ import logging
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from grokbot_bridge.replies import RAW_BODY_LIMIT, CallbackService, HttpResult, log_line
+from discord_agent_bridge.replies import RAW_BODY_LIMIT, CallbackService, HttpResult, log_line
 
-logger = logging.getLogger("grokbot_bridge")
+logger = logging.getLogger("discord_agent_bridge")
 
 
 class CallbackHandler(BaseHTTPRequestHandler):

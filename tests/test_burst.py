@@ -1,4 +1,4 @@
-from grokbot_bridge.burst import build_burst, build_tail
+from discord_agent_bridge.burst import build_burst, build_tail
 from tests.support import message
 
 

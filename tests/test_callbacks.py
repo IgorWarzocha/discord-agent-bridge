@@ -2,9 +2,9 @@ import json
 import sqlite3
 from datetime import timedelta
 
-from grokbot_bridge.callbacks import CallbackStore
-from grokbot_bridge.rate_limit import RateLimiter
-from grokbot_bridge.replies import CallbackService, DiscordPostError, ReplyPoster
+from discord_agent_bridge.callbacks import CallbackStore
+from discord_agent_bridge.rate_limit import RateLimiter
+from discord_agent_bridge.replies import CallbackService, DiscordPostError, ReplyPoster
 from tests.support import T0
 
 

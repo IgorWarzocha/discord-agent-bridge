@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from grokbot_bridge.callbacks import TrackedMessage
+from discord_agent_bridge.callbacks import TrackedMessage
 
 
 @dataclass(frozen=True)

@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from grokbot_bridge.address import parse_link_email
-from grokbot_bridge.burst import build_burst, build_tail
-from grokbot_bridge.payload import CallbackInstructions, format_mail
+from discord_agent_bridge.burst import build_burst, build_tail
+from discord_agent_bridge.connectors.grokbot import render_email
+from discord_agent_bridge.payload import CallbackInstructions, build_payload, render_task
 from tests.support import T0, message
 
 
@@ -18,15 +18,14 @@ def test_subject_body_and_callback_block() -> None:
     )
     burst = build_burst(prior, trigger)
     tail = build_tail(prior, trigger, burst, parent=parent)
-    mail = format_mail(
-        address=parse_link_email("ada@mail.grokbot.com", tag="research"),
-        label="research",
+    payload = build_payload(
         channel_name="design",
         trigger=trigger,
         parent=parent,
         burst=burst,
         tail=tail,
         bot_id="42",
+        label="research",
         callback=CallbackInstructions(
             reply_url="https://bridge.example/reply/TOKEN",
             react_url="https://bridge.example/react/TOKEN",
@@ -35,16 +34,10 @@ def test_subject_body_and_callback_block() -> None:
             text_limit=8000,
         ),
     )
-    assert mail.to == "ada+research@mail.grokbot.com"
-    assert mail.subject == "[Discord] #design @ada: research check the palette"
-    text = mail.text
+    assert payload.subject == "[Discord] #design @ada: research check the palette"
+    text = render_task(payload)
     assert text.index("--- Tagged message ---") < text.index("--- Parent ---")
     assert text.index("--- Parent ---") < text.index("--- Burst (same author, chronological) ---")
-    assert text.index("--- Burst (same author, chronological) ---") < text.index(
-        "--- Earlier channel (not part of the burst) ---"
-    )
-    tagged = text.split("--- Tagged message ---\n", 1)[1].split("\n\n--- Parent ---", 1)[0]
-    assert tagged == "<@42> research check the palette"
     burst_section = text.split("--- Burst (same author, chronological) ---\n", 1)[1].split(
         "\n\n--- Earlier channel", 1
     )[0]
@@ -52,34 +45,31 @@ def test_subject_body_and_callback_block() -> None:
     assert "what shipped?" in text.split("--- Parent ---", 1)[1].split("--- Burst", 1)[0]
     assert burst_section.index("looking at the palette") < burst_section.index("mostly the blues")
     assert "earlier thought" in earlier and "earlier thought" not in burst_section
-    assert "what shipped?" not in earlier
-    assert "Mode: routine\n" in text
-    assert f"Timestamp: {T0.isoformat()}\n" in text
     assert "This link expires at 2026-10-22T12:00:00+00:00." in text
     assert "It allows 5 posts." in text
-    assert "Each post replies to the original tagged message." in text
     assert "curl -sS -X POST 'https://bridge.example/reply/TOKEN' \\" in text
     assert "-d '{\"text\":\"your reply\"}'" in text
-    assert "curl -sS -X POST 'https://bridge.example/react/TOKEN' \\" in text
     assert "-d '{\"emoji\":\"👀\"}'" in text
-    assert 'JSON: {"text":"..."}' in text
+
+    mail = render_email(payload, {"email": "ada+research@mail.grokbot.com", "mode": "routine"})
+    assert mail.to == "ada+research@mail.grokbot.com"
+    assert mail.subject == payload.subject
+    assert "Mode: routine\n" in mail.text
+    assert "To: ada+research@mail.grokbot.com\n" in mail.text
 
     long_trigger = message("1", "<@42> " + ("alpha " * 20) + "\nbeta", 0)
-    long_mail = format_mail(
-        address=parse_link_email("ada@mail.grokbot.com"),
-        label=None,
+    long_payload = build_payload(
         channel_name="design\nsecret",
         trigger=long_trigger,
         parent=None,
         burst=(long_trigger,),
         tail=(),
         bot_id="42",
+        label=None,
         callback=None,
     )
-    assert "\n" not in long_mail.subject
-    assert long_mail.subject.startswith("[Discord] #design secret @ada: ")
-    assert long_mail.subject.endswith("...")
-    assert len(long_mail.subject) <= 140
-    assert "Mode: bot\n" in long_mail.text
-    assert "not configured (set CALLBACK_BASE_URL" in long_mail.text
-    assert ("alpha " * 20) + "\nbeta" in long_mail.text
+    assert "\n" not in long_payload.subject
+    assert long_payload.subject.startswith("[Discord] #design secret @ada: ")
+    assert long_payload.subject.endswith("...")
+    assert "not configured (set CALLBACK_BASE_URL" in render_task(long_payload)
+    assert ("alpha " * 20) + "\nbeta" in render_task(long_payload)

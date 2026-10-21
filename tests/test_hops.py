@@ -1,5 +1,5 @@
-from grokbot_bridge.callbacks import TrackedMessage
-from grokbot_bridge.hops import decide_forward, hop_limit_message
+from discord_agent_bridge.callbacks import TrackedMessage
+from discord_agent_bridge.hops import decide_forward, hop_limit_message
 
 
 def test_loop_guard_and_hop_limit() -> None:

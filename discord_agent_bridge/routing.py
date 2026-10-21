@@ -1,12 +1,13 @@
-"""Decide which of the author's links receives a mention, and build the mail."""
+"""Choose the author's link and hand the normalised payload to its connector."""
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 
-from grokbot_bridge.burst import (
+from discord_agent_bridge.burst import (
     DEFAULT_BURST_GAP,
     DEFAULT_BURST_WINDOW,
     DEFAULT_TAIL_COUNT,
@@ -14,16 +15,19 @@ from grokbot_bridge.burst import (
     build_burst,
     build_tail,
 )
-from grokbot_bridge.callbacks import CallbackStore
-from grokbot_bridge.mentions import selection_keyword
-from grokbot_bridge.payload import CallbackInstructions, OutboundMail, format_mail
-from grokbot_bridge.rate_limit import RateLimiter
-from grokbot_bridge.registry import Link, Registry
+from discord_agent_bridge.callbacks import CallbackStore
+from discord_agent_bridge.connectors.catalog import ConnectorCatalog
+from discord_agent_bridge.mentions import selection_keyword
+from discord_agent_bridge.payload import BridgePayload, CallbackInstructions, build_payload
+from discord_agent_bridge.rate_limit import RateLimiter
+from discord_agent_bridge.registry import Link, Registry
 
 NOT_LINKED = (
-    "You have not linked a Grok Bot. Use `/link-grok` to connect a bot address "
-    "(name@mail.grokbot.com) or a routine address (name+tag@mail.grokbot.com)."
+    "You have not connected an agent. Use `/connect` "
+    "(or `/link-grok` for a mail.grokbot.com address)."
 )
+
+Handoff = Literal["sent", "failed", "none"]
 
 
 @dataclass(frozen=True)
@@ -52,15 +56,13 @@ class OpenCallbacks:
 @dataclass(frozen=True)
 class MentionOutcome:
     channel_reply: str
-    mail: OutboundMail | None
+    handoff: Handoff
 
 
 def select_link(links: Sequence[Link], content: str, bot_id: str) -> Link:
-    """Pick the link for this mention.
+    """First word after the mention selects a label. Otherwise the unlabeled default.
 
-    The first word after the bot mention selects a label when it matches one.
-    Otherwise the unlabeled link is the default. If every saved link has a
-    label and none matches, the earliest link the user saved is the default.
+    If every link has a label and none matches, the earliest link is used.
     """
     if not links:
         raise ValueError("select_link requires at least one link")
@@ -72,13 +74,14 @@ def select_link(links: Sequence[Link], content: str, bot_id: str) -> Link:
     for link in links:
         if link.label is None:
             return link
-    return min(links, key=lambda link: (link.created_at, link.label or "", link.address.exact))
+    return min(links, key=lambda link: (link.created_at, link.label or "", link.connector_type))
 
 
 def deliver_mention(
     ctx: MentionContext,
     registry: Registry,
     limiter: RateLimiter,
+    connectors: ConnectorCatalog,
     *,
     window: timedelta = DEFAULT_BURST_WINDOW,
     gap: timedelta = DEFAULT_BURST_GAP,
@@ -90,30 +93,28 @@ def deliver_mention(
         raise ValueError("mention author does not match the tagged message")
     links = registry.list_links(ctx.author_id)
     if not links:
-        return MentionOutcome(channel_reply=NOT_LINKED, mail=None)
+        return MentionOutcome(NOT_LINKED, "none")
     link = select_link(links, ctx.trigger.content, ctx.bot_id)
+    connector = connectors.get(link.connector_type)
+    if connector is None:
+        return MentionOutcome(f"The `{link.connector_type}` connector is not available.", "none")
     if not limiter.allow(ctx.author_id):
-        return MentionOutcome(channel_reply=limiter.denial_message(), mail=None)
+        return MentionOutcome(limiter.denial_message(), "none")
     burst = build_burst(ctx.prior, ctx.trigger, window=window, gap=gap)
     tail = build_tail(ctx.prior, ctx.trigger, burst, parent=ctx.parent, limit=tail_count)
-    mail = format_mail(
-        address=link.address,
-        label=link.label,
+    include_callback = connector.capabilities.supports_callback
+    payload: BridgePayload = build_payload(
         channel_name=ctx.channel_name,
         trigger=ctx.trigger,
         parent=ctx.parent,
         burst=burst,
         tail=tail,
         bot_id=ctx.bot_id,
-        callback=_issue_callback(ctx, callbacks),
+        label=link.label,
+        callback=_issue_callback(ctx, callbacks) if include_callback else None,
     )
-    return MentionOutcome(channel_reply=_sent_reply(link), mail=mail)
-
-
-def _sent_reply(link: Link) -> str:
-    if link.label is None:
-        return f"Sent this to your default {link.address.mode} link."
-    return f"Sent this to your {link.address.mode} link `{link.label}`."
+    result = connector.deliver(payload, link.config)
+    return MentionOutcome(result.summary, "sent" if result.ok else "failed")
 
 
 def _issue_callback(ctx: MentionContext, callbacks: OpenCallbacks | None) -> CallbackInstructions | None:

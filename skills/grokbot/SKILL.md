@@ -3,7 +3,7 @@ name: discord-bridge
 description: "Use when mail has subject [Discord] and a Reply to Discord callback. Answer in Discord through that callback."
 ---
 
-Treat the message as a Discord task when the subject starts with `[Discord] #` and the body contains `--- Reply to Discord ---`.
+This skill is for the grokbot connector. Treat the message as a Discord task when the subject starts with `[Discord] #` and the body contains `--- Reply to Discord ---`.
 
 The body is the task brief. Use the tagged message, the parent, the burst, and the earlier channel section. `bot` mode and `routine` mode are the same task: the subject is the wake, and the instructions for posting back are in the body.
 

@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from grokbot_bridge.callbacks import CallbackStore
-from grokbot_bridge.discord_app import BridgeBot
-from grokbot_bridge.rate_limit import RateLimiter
-from grokbot_bridge.registry import Registry
-from grokbot_bridge.resend import ResendSender
-from grokbot_bridge.settings import SettingsError, load_dotenv, load_settings
+from discord_agent_bridge.callbacks import CallbackStore
+from discord_agent_bridge.connectors.catalog import build_connectors
+from discord_agent_bridge.connectors.http_post import urllib_post
+from discord_agent_bridge.discord_app import BridgeBot
+from discord_agent_bridge.rate_limit import RateLimiter
+from discord_agent_bridge.registry import Registry
+from discord_agent_bridge.resend import ResendSender
+from discord_agent_bridge.settings import SettingsError, load_dotenv, load_settings
 
 
 def main() -> None:
@@ -26,6 +28,11 @@ def main() -> None:
         raise SystemExit(str(exc)) from exc
     registry = Registry(settings.database_path)
     callbacks = CallbackStore(settings.database_path)
+    connectors = build_connectors(
+        ResendSender(settings.resend_api_key, settings.resend_from),
+        urllib_post,
+        lambda: datetime.now(timezone.utc),
+    )
     try:
         bot = BridgeBot(
             settings,
@@ -34,7 +41,7 @@ def main() -> None:
                 settings.rate_limit_max,
                 timedelta(seconds=settings.rate_limit_window_seconds),
             ),
-            ResendSender(settings.resend_api_key, settings.resend_from),
+            connectors,
             callbacks,
             RateLimiter(
                 settings.callback_rate_limit_max,

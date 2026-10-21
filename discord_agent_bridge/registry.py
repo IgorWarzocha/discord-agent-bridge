@@ -1,15 +1,14 @@
-"""SQLite map from a Discord user to one or more Grok Bot addresses."""
+"""SQLite map from a Discord user to typed connector links."""
 
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-
-from grokbot_bridge.address import GrokAddress, parse_link_email
 
 MAX_LINKS = 20
 _LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9_-]*[a-z0-9])?")
@@ -24,15 +23,12 @@ class LinkLimitError(ValueError):
     """The user already has MAX_LINKS saved."""
 
 
-class RegistryError(ValueError):
-    """A stored row is no longer a valid Grok address."""
-
-
 @dataclass(frozen=True)
 class Link:
     discord_user_id: str
     label: str | None
-    address: GrokAddress
+    connector_type: str
+    config: dict[str, str]
     created_at: datetime
 
 
@@ -42,17 +38,12 @@ def parse_label(value: str | None) -> str | None:
         return None
     label = value.strip().casefold()
     if not label:
-        raise InvalidLabel(
-            "Omit the label to save the default link. A blank label is not allowed."
-        )
+        raise InvalidLabel("Omit the label to save the default link. A blank label is not allowed.")
     if label in RESERVED_LABELS:
-        raise InvalidLabel(
-            'The label "default" is reserved for the unlabeled link.'
-        )
+        raise InvalidLabel('The label "default" is reserved for the unlabeled link.')
     if len(label) > 32 or _LABEL_RE.fullmatch(label) is None:
         raise InvalidLabel(
-            "Labels must start and end with a letter or number "
-            "and may contain hyphens and underscores."
+            "Labels must start and end with a letter or number and may contain hyphens and underscores."
         )
     return label
 
@@ -78,7 +69,13 @@ class Registry:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
-    def upsert(self, user_id: str, label: str | None, address: GrokAddress) -> str:
+    def upsert(
+        self,
+        user_id: str,
+        label: str | None,
+        connector_type: str,
+        config: Mapping[str, str],
+    ) -> str:
         user_id = _user_id(user_id)
         key = label or ""
         existing = self._conn.execute(
@@ -86,18 +83,16 @@ class Registry:
             (user_id, key),
         ).fetchone()
         if existing is None and self._count(user_id) >= MAX_LINKS:
-            raise LinkLimitError(
-                f"You can save {MAX_LINKS} links. Unlink one before adding another."
-            )
+            raise LinkLimitError(f"You can save {MAX_LINKS} links. Disconnect one before adding another.")
         self._conn.execute(
             """
-            INSERT INTO links (discord_user_id, label, email, mode, created_at)
+            INSERT INTO links (discord_user_id, label, connector_type, config_json, created_at)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(discord_user_id, label) DO UPDATE SET
-                email = excluded.email,
-                mode = excluded.mode
+                connector_type = excluded.connector_type,
+                config_json = excluded.config_json
             """,
-            (user_id, key, address.exact, address.mode, self._clock().isoformat()),
+            (user_id, key, connector_type, json.dumps(dict(config), sort_keys=True), self._clock().isoformat()),
         )
         self._conn.commit()
         if existing is None:
@@ -108,14 +103,13 @@ class Registry:
         user_id = _user_id(user_id)
         rows = self._conn.execute(
             """
-            SELECT label, email, created_at
-            FROM links
-            WHERE discord_user_id = ?
+            SELECT label, connector_type, config_json, created_at
+            FROM links WHERE discord_user_id = ?
             ORDER BY created_at, label
             """,
             (user_id,),
         ).fetchall()
-        return tuple(self._to_link(user_id, row) for row in rows)
+        return tuple(_to_link(user_id, row) for row in rows)
 
     def delete_label(self, user_id: str, label: str) -> bool:
         return self._delete(user_id, label)
@@ -125,10 +119,7 @@ class Registry:
 
     def delete_all(self, user_id: str) -> int:
         user_id = _user_id(user_id)
-        cursor = self._conn.execute(
-            "DELETE FROM links WHERE discord_user_id = ?",
-            (user_id,),
-        )
+        cursor = self._conn.execute("DELETE FROM links WHERE discord_user_id = ?", (user_id,))
         self._conn.commit()
         return int(cursor.rowcount)
 
@@ -150,13 +141,14 @@ class Registry:
 
     def _init(self) -> None:
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._migrate_legacy()
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS links (
                 discord_user_id TEXT NOT NULL,
                 label TEXT NOT NULL,
-                email TEXT NOT NULL,
-                mode TEXT NOT NULL CHECK (mode IN ('bot', 'routine')),
+                connector_type TEXT NOT NULL,
+                config_json TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 PRIMARY KEY (discord_user_id, label)
             )
@@ -164,21 +156,58 @@ class Registry:
         )
         self._conn.commit()
 
-    def _to_link(self, user_id: str, row: sqlite3.Row) -> Link:
-        try:
-            address = parse_link_email(row["email"])
-            created_at = datetime.fromisoformat(row["created_at"])
-        except ValueError as exc:
-            raise RegistryError(f"stored row for {user_id} is invalid") from exc
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        label = row["label"] or None
-        return Link(
-            discord_user_id=user_id,
-            label=label,
-            address=address,
-            created_at=created_at,
+    def _migrate_legacy(self) -> None:
+        row = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'links'"
+        ).fetchone()
+        if row is None:
+            return
+        columns = {item[1] for item in self._conn.execute("PRAGMA table_info(links)")}
+        if "connector_type" in columns:
+            return
+        self._conn.execute(
+            """
+            CREATE TABLE links_v2 (
+                discord_user_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                connector_type TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (discord_user_id, label)
+            )
+            """
         )
+        if "email" in columns:
+            for old in self._conn.execute("SELECT discord_user_id, label, email, mode, created_at FROM links"):
+                config = json.dumps({"email": old["email"], "mode": old["mode"]}, sort_keys=True)
+                self._conn.execute(
+                    """
+                    INSERT INTO links_v2 (discord_user_id, label, connector_type, config_json, created_at)
+                    VALUES (?, ?, 'grokbot', ?, ?)
+                    """,
+                    (old["discord_user_id"], old["label"], config, old["created_at"]),
+                )
+        self._conn.execute("DROP TABLE links")
+        self._conn.execute("ALTER TABLE links_v2 RENAME TO links")
+        self._conn.commit()
+
+
+def _to_link(user_id: str, row: sqlite3.Row) -> Link:
+    created_at = datetime.fromisoformat(row["created_at"])
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    raw = json.loads(row["config_json"])
+    if not isinstance(raw, dict):
+        raw = {}
+    config = {str(key): str(value) for key, value in raw.items()}
+    label = row["label"] or None
+    return Link(
+        discord_user_id=user_id,
+        label=label,
+        connector_type=row["connector_type"],
+        config=config,
+        created_at=created_at,
+    )
 
 
 def _user_id(value: str) -> str:

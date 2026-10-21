@@ -8,9 +8,9 @@ from collections.abc import Sequence
 
 import discord
 
-from grokbot_bridge.replies import DiscordPostError
+from discord_agent_bridge.replies import DiscordPostError
 
-logger = logging.getLogger("grokbot_bridge")
+logger = logging.getLogger("discord_agent_bridge")
 
 HANDOFF_SENT = "📨"
 HANDOFF_FAILED = "⚠️"
