@@ -47,6 +47,8 @@ When `CALLBACK_BASE_URL` is set and the connector's `supports_callback` is true,
 
 The bridge reacts `📨` when delivery succeeds and `⚠️` when it fails.
 
+Install `skills/discord-bridge/SKILL.md` as a skill named `discord-bridge` on the receiving agent. It covers replies, reactions, callback limits and delivery failures across all connectors. The bridge does not install it. For a Grok Bot routine, install it on the routine receiving the plus-tagged email.
+
 The bridge's own messages never start another delivery. Other bots and webhooks are ignored unless their user id is in `BOT_ALLOWLIST`. After `MAX_HOPS` bot-to-bot mentions (default 3) the thread stops.
 
 ## Burst
@@ -79,8 +81,6 @@ Resend HTTP API (`https://api.resend.com/emails`). No SMTP.
 `/connect type:grokbot email:... tag:...`. A tag option builds `name+tag@` from a plain address. Other domains are rejected.
 
 The routine's wake carries headers only, so it must read the body. The subject is `[Discord] #channel @user: first words`. The callback curl is in the body.
-
-Install `skills/grokbot/SKILL.md` as a user skill named `grokbot` on that bot (plain address) or on the routine (plus-tag). The bridge does not install it.
 
 Routine triggers default to `requireAuthPass`. The Resend domain in `RESEND_FROM` must be verified with SPF and DKIM aligned, and DMARC must pass, or the routine will not fire.
 
