@@ -1,10 +1,11 @@
-"""SQLite map from a Discord user to typed connector links."""
+"""SQLite links shared by the bot loop and delivery workers, serialized by a lock."""
 
 from __future__ import annotations
 
 import json
 import re
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -53,15 +54,17 @@ class Registry:
         self._path = Path(path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._clock = clock or (lambda: datetime.now(timezone.utc))
-        self._conn = sqlite3.connect(self._path, timeout=5)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(self._path, timeout=5, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._closed = False
         self._init()
 
     def close(self) -> None:
-        if not self._closed:
-            self._conn.close()
-            self._closed = True
+        with self._lock:
+            if not self._closed:
+                self._conn.close()
+                self._closed = True
 
     def __enter__(self) -> Registry:
         return self
@@ -76,40 +79,42 @@ class Registry:
         connector_type: str,
         config: Mapping[str, str],
     ) -> str:
-        user_id = _user_id(user_id)
-        key = label or ""
-        existing = self._conn.execute(
-            "SELECT 1 FROM links WHERE discord_user_id = ? AND label = ?",
-            (user_id, key),
-        ).fetchone()
-        if existing is None and self._count(user_id) >= MAX_LINKS:
-            raise LinkLimitError(f"You can save {MAX_LINKS} links. Disconnect one before adding another.")
-        self._conn.execute(
-            """
-            INSERT INTO links (discord_user_id, label, connector_type, config_json, created_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(discord_user_id, label) DO UPDATE SET
-                connector_type = excluded.connector_type,
-                config_json = excluded.config_json
-            """,
-            (user_id, key, connector_type, json.dumps(dict(config), sort_keys=True), self._clock().isoformat()),
-        )
-        self._conn.commit()
-        if existing is None:
-            return "created"
-        return "updated"
+        with self._lock:
+            user_id = _user_id(user_id)
+            key = label or ""
+            existing = self._conn.execute(
+                "SELECT 1 FROM links WHERE discord_user_id = ? AND label = ?",
+                (user_id, key),
+            ).fetchone()
+            if existing is None and self._count(user_id) >= MAX_LINKS:
+                raise LinkLimitError(f"You can save {MAX_LINKS} links. Disconnect one before adding another.")
+            self._conn.execute(
+                """
+                INSERT INTO links (discord_user_id, label, connector_type, config_json, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(discord_user_id, label) DO UPDATE SET
+                    connector_type = excluded.connector_type,
+                    config_json = excluded.config_json
+                """,
+                (user_id, key, connector_type, json.dumps(dict(config), sort_keys=True), self._clock().isoformat()),
+            )
+            self._conn.commit()
+            if existing is None:
+                return "created"
+            return "updated"
 
     def list_links(self, user_id: str) -> tuple[Link, ...]:
-        user_id = _user_id(user_id)
-        rows = self._conn.execute(
-            """
-            SELECT label, connector_type, config_json, created_at
-            FROM links WHERE discord_user_id = ?
-            ORDER BY created_at, label
-            """,
-            (user_id,),
-        ).fetchall()
-        return tuple(_to_link(user_id, row) for row in rows)
+        with self._lock:
+            user_id = _user_id(user_id)
+            rows = self._conn.execute(
+                """
+                SELECT label, connector_type, config_json, created_at
+                FROM links WHERE discord_user_id = ?
+                ORDER BY created_at, label
+                """,
+                (user_id,),
+            ).fetchall()
+            return tuple(_to_link(user_id, row) for row in rows)
 
     def delete_label(self, user_id: str, label: str) -> bool:
         return self._delete(user_id, label)
@@ -118,19 +123,21 @@ class Registry:
         return self._delete(user_id, "")
 
     def delete_all(self, user_id: str) -> int:
-        user_id = _user_id(user_id)
-        cursor = self._conn.execute("DELETE FROM links WHERE discord_user_id = ?", (user_id,))
-        self._conn.commit()
-        return int(cursor.rowcount)
+        with self._lock:
+            user_id = _user_id(user_id)
+            cursor = self._conn.execute("DELETE FROM links WHERE discord_user_id = ?", (user_id,))
+            self._conn.commit()
+            return int(cursor.rowcount)
 
     def _delete(self, user_id: str, label: str) -> bool:
-        user_id = _user_id(user_id)
-        cursor = self._conn.execute(
-            "DELETE FROM links WHERE discord_user_id = ? AND label = ?",
-            (user_id, label),
-        )
-        self._conn.commit()
-        return cursor.rowcount > 0
+        with self._lock:
+            user_id = _user_id(user_id)
+            cursor = self._conn.execute(
+                "DELETE FROM links WHERE discord_user_id = ? AND label = ?",
+                (user_id, label),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     def _count(self, user_id: str) -> int:
         row = self._conn.execute(

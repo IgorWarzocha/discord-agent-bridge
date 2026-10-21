@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
 
 from discord_agent_bridge.connectors.catalog import ConnectorCatalog
 from discord_agent_bridge.connectors.grokbot import GrokbotConnector
@@ -81,3 +82,16 @@ def test_mention_rate_limit_is_per_user(tmp_path) -> None:
     assert other.handoff == "sent"
     assert fake.calls[-1][2]["to"] == ["bob@mail.grokbot.com"]
     registry.close()
+
+
+def test_delivery_worker_reads_links_created_on_bot_thread(tmp_path) -> None:
+    with Registry(tmp_path / "links.sqlite3") as registry:
+        connectors, fake = _connectors()
+        registry.upsert("100", None, "grokbot", {"email": "ada@mail.grokbot.com", "mode": "bot"})
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            outcome = worker.submit(
+                deliver_mention, _ctx("<@42> hello"), registry,
+                RateLimiter(5, timedelta(minutes=10), clock=lambda: T0), connectors,
+            ).result()
+        assert outcome.handoff == "sent"
+        assert fake.calls[0][2]["to"] == ["ada@mail.grokbot.com"]

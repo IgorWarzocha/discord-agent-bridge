@@ -14,7 +14,7 @@ class HttpResult(NamedTuple):
 
 
 class HttpTransport(Protocol):
-    def post(self, url: str, headers: Mapping[str, str], body: bytes) -> HttpResult: ...
+    def __call__(self, url: str, headers: Mapping[str, str], body: bytes) -> HttpResult: ...
 
 
 class HttpDeliveryError(Exception):
@@ -46,7 +46,7 @@ def post_json(
     body: bytes,
 ) -> None:
     try:
-        result = transport.post(url, headers, body)
+        result = transport(url, headers, body)
     except HttpDeliveryError:
         raise
     except Exception as exc:

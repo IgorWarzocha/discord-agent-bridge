@@ -1,12 +1,13 @@
 import hashlib
 import hmac
 import json
+from io import BytesIO
 from datetime import datetime, timezone
 
 from discord_agent_bridge.connectors.catalog import build_connectors
 from discord_agent_bridge.connectors.grokbot import GrokbotConnector
 from discord_agent_bridge.connectors.hermes import HermesConnector
-from discord_agent_bridge.connectors.http_post import HttpResult
+from discord_agent_bridge.connectors.http_post import HttpResult, urllib_post
 from discord_agent_bridge.connectors.openclaw import OpenClawConnector
 from discord_agent_bridge.connectors.protocol import InvalidConfig
 from discord_agent_bridge.connectors.signing import signature_v1, signature_v2
@@ -23,7 +24,7 @@ class RecordingHttp:
         self.status = status
         self.calls: list[tuple[str, dict[str, str], bytes]] = []
 
-    def post(self, url: str, headers: dict[str, str], body: bytes) -> HttpResult:
+    def __call__(self, url: str, headers: dict[str, str], body: bytes) -> HttpResult:
         self.calls.append((url, dict(headers), body))
         return HttpResult(self.status, "")
 
@@ -159,3 +160,31 @@ def test_connect_rejects_a_bad_webhook_and_hides_the_secret(tmp_path) -> None:
     assert "webhook · ops · https://example.com/hook" in status.message
     assert secret not in status.message
     registry.close()
+
+
+def test_catalog_delivers_through_production_http_transport(monkeypatch) -> None:
+    requests = []
+
+    class Response(BytesIO):
+        status = 200
+
+    def urlopen(request, *, timeout):
+        requests.append(request)
+        assert timeout == 20
+        return Response(b"{}")
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    catalog = build_connectors(
+        ResendSender("test-key", "bridge@example.com", transport=FakeResend()),
+        urllib_post, lambda: T0,
+    )
+    for kind, options in (
+        ("webhook", {"url": "https://example.com/hook", "secret": "s" * 16}),
+        ("hermes", {"url": "https://example.com/webhooks/discord", "secret": "secret"}),
+        ("openclaw", {"url": "https://example.com", "token": "token"}),
+    ):
+        connector = catalog.get(kind)
+        assert connector is not None
+        assert connector.deliver(_payload(), connector.validate(options)).ok
+    assert len(requests) == 3
+    assert all(request.method == "POST" and request.data for request in requests)
