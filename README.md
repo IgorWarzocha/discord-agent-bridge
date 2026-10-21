@@ -151,13 +151,33 @@ Set both `RESEND_API_KEY` and `RESEND_FROM` to enable grokbot, or leave both emp
 
 ## Hosting
 
-Run this on the always-on server. Agents that answer through the callback must reach `POST /reply/<token>` and `POST /react/<token>`, so `CALLBACK_BASE_URL` has to be public HTTPS. The process binds `127.0.0.1:8787` by default and does not open a public port. Nothing here starts a tunnel.
+### Recommended free-tier setup
 
-Choose one:
+For personal use, run the bridge on a machine you already keep online. No paid VPS is required.
+
+| Piece | Recommendation | Cost boundary |
+| --- | --- | --- |
+| Bridge process | Your existing server, mini PC or Raspberry Pi with Python 3.11+ | Hardware, electricity and internet are yours |
+| Discord app | Your own Discord bot | Free |
+| Public HTTPS callbacks | [Tailscale Funnel](https://tailscale.com/docs/features/tailscale-funnel) on the free Personal plan | Subject to Tailscale's plan terms and Funnel limits |
+| Grok Bot email delivery | [Resend Free](https://resend.com/pricing) | Currently 3,000 emails per month, capped at 100 per day, shared across this deployment |
+
+For Grok Bot, you also need a domain you own for the verified sender. A subdomain of an existing domain works. Your connected agent's subscription or API costs are separate. Hermes, OpenClaw and generic webhooks need neither Resend nor an email-sending domain.
+
+With Tailscale installed and signed in on the bridge machine, publish the default callback port:
+
+```bash
+tailscale funnel --bg 8787
+```
+
+Follow any first-use prompts, then set `CALLBACK_BASE_URL` in `.env` to the HTTPS URL Funnel prints. Keep the bridge process running separately. Funnel supplies the public hostname and certificate, so callbacks do not need a purchased domain. The receiving agent does not need to join your tailnet. Tailscale Serve alone is tailnet-only and is not a substitute for Funnel.
+
+### Other hosting options
+
+Agents that answer through the callback must reach `POST /reply/<token>` and `POST /react/<token>`, so `CALLBACK_BASE_URL` has to be public HTTPS. The process binds `127.0.0.1:8787` by default and does not open a public port. Nothing here starts a tunnel automatically.
 
 - **Cloudflare Tunnel** (`cloudflared`) from `127.0.0.1:8787` to a hostname you control. Set `CALLBACK_BASE_URL` to that `https://` origin.
 - **Caddy or nginx** on the server, with a real certificate, proxying to `127.0.0.1:8787`. Keep the app port off the public firewall.
-- **Tailscale Funnel** only if the agent that answers can open that URL. A tailnet the agent is outside of will not work.
 
 ## Run locally
 
