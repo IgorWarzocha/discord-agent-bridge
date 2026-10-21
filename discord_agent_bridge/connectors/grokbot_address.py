@@ -1,8 +1,8 @@
 """Grok Bot addresses on mail.grokbot.com.
 
-A plain address is bot mode: it wakes the Grok Bot itself, like a normal chat.
-An address with one plus-tag is routine mode: it fires only the routine
-listening on that tag.
+A plain address is bot mode; one plus-tag selects routine mode. Both require
+an email-triggered routine on the receiving bot. These modes describe address
+routing, not whether the bot wakes automatically.
 """
 
 from __future__ import annotations
