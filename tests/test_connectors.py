@@ -74,6 +74,31 @@ def test_grokbot_address_and_resend_delivery() -> None:
     assert "Mode: routine" in str(payload["text"])
 
 
+def test_grokbot_worker_uses_default_resend_transport(monkeypatch) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    requests = []
+
+    class Response(BytesIO):
+        status = 200
+
+    def urlopen(request, *, timeout):
+        requests.append(request)
+        assert timeout == 20
+        return Response(b'{"id":"email_test"}')
+
+    monkeypatch.setattr("urllib.request.urlopen", urlopen)
+    connector = GrokbotConnector(ResendSender("test-key", "bridge@example.com"))
+    config = connector.validate({"email": "ada@mail.grokbot.com"})
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        assert worker.submit(connector.deliver, _payload(), config).result().ok
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.full_url == "https://api.resend.com/emails"
+    assert request.get_header("Authorization") == "Bearer test-key"
+    assert json.loads(request.data)["to"] == ["ada@mail.grokbot.com"]
+
+
 def test_webhook_signs_the_json_body() -> None:
     http = RecordingHttp()
     when = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)

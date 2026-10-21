@@ -38,6 +38,6 @@ class FakeResend:
         self.body = body
         self.calls: list[tuple[str, dict[str, str], dict[str, object]]] = []
 
-    def post_json(self, url: str, headers: dict[str, str], payload: dict[str, object]) -> HttpResponse:
+    def __call__(self, url: str, headers: dict[str, str], payload: dict[str, object]) -> HttpResponse:
         self.calls.append((url, dict(headers), dict(payload)))
         return HttpResponse(self.status, self.body)

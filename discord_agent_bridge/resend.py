@@ -25,7 +25,7 @@ class HttpResponse(NamedTuple):
 
 
 class Transport(Protocol):
-    def post_json(
+    def __call__(
         self,
         url: str,
         headers: Mapping[str, str],
@@ -84,7 +84,7 @@ class ResendSender:
             "Accept": "application/json",
             "User-Agent": "discord-agent-bridge",
         }
-        response = self._transport.post_json(RESEND_EMAILS_URL, headers, payload)
+        response = self._transport(RESEND_EMAILS_URL, headers, payload)
         if response.status < 200 or response.status >= 300:
             raise ResendError(response.status, f"Resend returned HTTP {response.status}")
         return _email_id(response.body)
