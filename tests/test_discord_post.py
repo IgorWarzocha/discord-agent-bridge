@@ -1,6 +1,6 @@
 import asyncio
 
-from grokbot_bridge.discord_sink import handoff_emoji, mentions_none, post_reply, react_handoff
+from grokbot_bridge.discord_sink import handoff_emoji, post_reply, react_handoff
 
 
 class _Sent:
@@ -30,7 +30,7 @@ class _Channel:
         return self.original
 
 
-def test_replies_disable_every_mention() -> None:
+def test_replies_disable_mentions_and_handoff_reacts() -> None:
     original = _Original()
     asyncio.run(post_reply(_Channel(original), "9", "hello @everyone <@1>"))
     assert original.kwargs is not None
@@ -41,11 +41,7 @@ def test_replies_disable_every_mention() -> None:
     assert allowed.roles is False
     assert allowed.replied_user is False
     assert allowed.to_dict()["parse"] == []
-    assert mentions_none().to_dict()["parse"] == []
     assert "@everyone" in original.kwargs["content"]
-
-
-def test_handoff_reactions_are_sent_and_failed() -> None:
     assert handoff_emoji(True) == "📨"
     assert handoff_emoji(False) == "⚠️"
     message = _Original()
